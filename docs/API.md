@@ -129,6 +129,12 @@ loses the session until it reloads. A session whose turn is **running**, that is
 not archived, or whose id does not match the `session-<uuid>` grammar is refused
 per-item rather than aborting the batch.
 
+Every successful per-item deletion also emits the Host's `api-session/removed`
+event before the log is unlinked, which is what makes the browser drop the row
+from its session catalog. Without it the sidebar keeps rendering the deleted
+session (usually under 未分组) until a full reload, because removing files is
+not something the client observes.
+
 Each `failed[]` entry carries a stable `code` beside the human message so the
 page can localize the refusal instead of printing Host English:
 

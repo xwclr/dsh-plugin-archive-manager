@@ -32,6 +32,9 @@ process.env.DSH_HOME = home;
  * that ships it, so it stands in for the runtime. */
 process.env.DSH_TEST_MODULE_ROOT = path.join(os.homedir(), '.dsh', 'profiles', 'desktop', 'package.json');
 
+/** Events the plugin emitted (the browser-facing session catalog). */
+const emitted = [];
+
 /** One registered route, as the plugin registered it. */
 const routes = [];
 const registered = [];
@@ -102,6 +105,9 @@ function fakeContext() {
 	const context = {
 		/* Cordis injects declared services as properties. */
 		webServer: { register: (route) => (routes.push(route), () => {}) },
+		emit(name, sessionId) {
+			emitted.push({ name, sessionId });
+		},
 		effect(callback, label) {
 			registered.push(label);
 			const dispose = callback();
@@ -538,6 +544,10 @@ async function main() {
 		assert.equal(fs.existsSync(directory), false, 'the session directory must be gone');
 		assert.equal(fakeWorkspaces[0].sessionIds.includes(id), false, 'the workspace must forget it');
 		assert.ok(unarchived.includes(id), 'the archive set must forget it');
+		assert.ok(
+			emitted.some((entry) => entry.name === 'api-session/removed' && entry.sessionId === id),
+			'the browser must be told the session is gone'
+		);
 		const listed = await archiveCall(port, 'list', {});
 		assert.equal(listed.body.value.total, 0);
 	});

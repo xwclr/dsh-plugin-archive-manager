@@ -89,7 +89,7 @@ const workspaces = [
 	{ id: 'ws-a', path: pathA, title: 'other', sessionIds: [s1] },
 	{ id: 'ws-b', path: pathB, title: 'kingscript', sessionIds: [s2] }
 ];
-const calls = { detach: [], unarchive: [] };
+const calls = { detach: [], unarchive: [], emitted: [] };
 
 /** Rewrite the durable store the way the real registry service would. */
 function writeWorkspace() {
@@ -191,6 +191,7 @@ function makeHandler(overrides) {
 		query: () => query,
 		sessions: () => sessions,
 		home: () => home,
+		emit: (id) => calls.emitted.push(id),
 		...overrides
 	});
 }
@@ -414,6 +415,7 @@ function call(handler, method, body, extraHeaders) {
 		check('delete drops the workspace accounting', !workspaces[1].sessionIds.includes(s2));
 		check('delete unarchives through the registry', calls.unarchive.length === unarchiveBefore + 1 && calls.unarchive.includes(s2));
 		check('delete drops the id from the durable set', !archive.readArchivedIds(home).includes(s2));
+		check('delete announces the removed session to browsers', calls.emitted.includes(s2));
 
 		/* ── delete: running vs open ──────────────────────────────────── */
 
