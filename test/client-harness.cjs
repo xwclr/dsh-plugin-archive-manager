@@ -930,6 +930,46 @@ async function main() {
 		assert.match(textOf(row), /软链/u, 'a linked skill must be labelled as linked');
 	});
 
+	test('the path is bidi-isolated so an absolute path keeps its leading slash', async () => {
+		const tree = await page();
+		const row = skillNodes(tree).find((candidate) => candidate.props['data-skill'] === 'alpha-skill');
+		const path = findAll(row, (node) => node.kind === 'host' && node.props && node.props.className === 'dsh-skm-rowPath')[0];
+		const bdi = findAll(path, (node) => node.kind === 'host' && node.type === 'bdi')[0];
+		assert.ok(bdi !== void 0, 'the path must live in a <bdi>; with direction:rtl the raw string moves the leading slash to the end');
+		assert.equal(textOf(bdi), '/home/u/.dsh/skills/alpha-skill/SKILL.md');
+	});
+
+	test('a dangling link is explained, cannot be switched, and can be deleted', async () => {
+		const dangling = skill('dangling-skill', {
+			description: '',
+			heading: void 0,
+			enabled: false,
+			parked: true,
+			problem: 'missing-file',
+			dangling: true,
+			linkTarget: null
+		});
+		const tree = await page({ answers: { list: { ok: true, value: { ...sample, skills: [dangling] } } } });
+		const row = skillNodes(tree).find((candidate) => candidate.props['data-skill'] === 'dangling-skill');
+		assert.ok(row !== void 0, 'a dangling link must be listed');
+		assert.match(textOf(row), /断开的软链接/u, 'the row must explain what is broken');
+		assert.equal(switchIn(row).props.disabled, true, 'a dangling link has no target to switch');
+
+		requests.length = 0;
+		const trash = findAll(row, (node) => node.kind === 'host' && node.props && node.props['data-danger'] === 'true' && node.props['aria-label'] !== void 0 && String(node.props['aria-label']).includes('删除'))[0];
+		assert.ok(trash !== void 0, 'the delete button must render');
+		trash.props.onClick();
+		await runtime.flush();
+		assert.match(textOf(runtime.getTree()), /删除只会移除这个链接本身/u, 'the dialog must say only the link is removed');
+		const confirm = findAll(runtime.getTree(), (node) => node.kind === 'host' && node.props && node.props['data-primitive'] === 'Button' && textOf(node).includes('删除'))[0];
+		assert.ok(confirm !== void 0, 'the confirmation dialog must offer a delete button');
+		confirm.props.onClick();
+		await runtime.flush();
+		const removal = requests.find((request) => request.method === 'remove');
+		assert.ok(removal !== void 0, 'confirming must post the removal');
+		assert.equal(removal.payload.path, '/home/u/.dsh/skills/dangling-skill');
+	});
+
 	test('reveal asks the host Finder route for the directory that holds the skill', async () => {
 		const launches = [];
 		await page({ launches, answers: { list: { ok: true, value: { ...sample, skills: [skill('reveal-me')] } } } });

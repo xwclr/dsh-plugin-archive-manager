@@ -326,6 +326,45 @@ async function main() {
 		assert.equal(fs.existsSync(entry), false);
 	});
 
+	test('lists a dangling skill link as broken but deletable', async () => {
+		const link = path.join(globalRoot, 'gone-skill');
+		fs.symlinkSync(path.join(scratch, 'gone-source'), link, 'dir');
+		const listed = await call(port, 'list', { workspacePath: workspace });
+		const row = listed.body.value.skills.find((skill) => skill.entry === 'gone-skill');
+		assert.ok(row !== void 0, 'a dangling link must still be listed');
+		assert.equal(row.dangling, true);
+		assert.equal(row.enabled, false);
+		assert.equal(row.problem, 'missing-file');
+		assert.equal(row.linkTarget, null);
+
+		const refused = await call(port, 'toggle', { workspacePath: workspace, path: row.entryPath, enabled: true });
+		assert.equal(refused.body.ok, false);
+		assert.match(refused.body.error.message, /dangling/u);
+
+		const removed = await call(port, 'remove', { workspacePath: workspace, path: row.entryPath });
+		assert.equal(removed.body.ok, true, `remove failed: ${JSON.stringify(removed.body)}`);
+		assert.equal(removed.body.value.link, true);
+		assert.equal(removed.body.value.dangling, true);
+		assert.throws(() => fs.lstatSync(link), /ENOENT/u);
+	});
+
+	test('lists and removes a dangling link parked under .system', async () => {
+		const parked = path.join(workspace, '.dsh', 'skills', '.system', 'parked-gone');
+		fs.mkdirSync(path.dirname(parked), { recursive: true });
+		fs.symlinkSync(path.join(scratch, 'never-was'), parked, 'dir');
+		const listed = await call(port, 'list', { workspacePath: workspace });
+		const row = listed.body.value.skills.find((skill) => skill.entry === 'parked-gone');
+		assert.ok(row !== void 0, 'a parked dangling link must be listed');
+		assert.equal(row.parked, true);
+		assert.equal(row.dangling, true);
+		assert.equal(row.problem, 'missing-file');
+
+		const removed = await call(port, 'remove', { workspacePath: workspace, path: row.entryPath });
+		assert.equal(removed.body.ok, true, `remove failed: ${JSON.stringify(removed.body)}`);
+		assert.equal(removed.body.value.dangling, true);
+		assert.throws(() => fs.lstatSync(parked), /ENOENT/u);
+	});
+
 	test('creates a skill and reports it in the list', async () => {
 		const created = await call(port, 'create', { workspacePath: workspace, scope: 'global', name: 'route-created', description: 'Scaffolded over HTTP.' });
 		assert.equal(created.body.ok, true);

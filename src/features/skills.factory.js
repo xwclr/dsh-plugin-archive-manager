@@ -142,6 +142,7 @@
 				installed: '已安装',
 				disabledGroup: '已停用',
 				broken: '无法解析',
+				danglingHint: '这是一个断开的软链接：它指向的目录已不存在，只能删除这个链接本身。',
 				shadowed: '被同名技能覆盖',
 				shadowedHint: '同名技能在更高优先级的目录里，当前生效的是那一个',
 				loading: '正在读取技能列表…',
@@ -149,6 +150,7 @@
 				retry: '重试',
 				deleteTitle: '删除技能',
 				deleteBody: '将从磁盘上删除「{name}」，此操作无法撤销。',
+				deleteDanglingBody: '「{name}」是一个断开的软链接，删除只会移除这个链接本身，不会影响它曾经指向的目录。',
 				deleteConfirm: '删除',
 				deleteCancel: '取消',
 				copyPath: '复制路径',
@@ -222,6 +224,7 @@
 				installed: 'Installed',
 				disabledGroup: 'Disabled',
 				broken: 'Unreadable',
+				danglingHint: 'Dangling symlink: the directory it points at is gone. Only the link itself can be deleted.',
 				shadowed: 'Shadowed by a same-named skill',
 				shadowedHint: 'A same-named skill in a higher-precedence directory wins',
 				loading: 'Reading the skill list…',
@@ -229,6 +232,7 @@
 				retry: 'Retry',
 				deleteTitle: 'Delete skill',
 				deleteBody: 'This removes “{name}” from disk. It cannot be undone.',
+				deleteDanglingBody: '“{name}” is a dangling symlink. Deleting it removes only the link, not the directory it pointed at.',
 				deleteConfirm: 'Delete',
 				deleteCancel: 'Cancel',
 				copyPath: 'Copy path',
@@ -586,7 +590,7 @@
 			const state = row.problem !== void 0 ? 'broken' : row.enabled ? 'on' : 'off';
 			const badges = [];
 			if (row.problem !== void 0) {
-				badges.push(h('span', { className: 'dsh-skm-badge', 'data-tone': 'warn', key: 'broken', title: row.problem }, h(IconWarning, { size: 11 }), L.broken));
+				badges.push(h('span', { className: 'dsh-skm-badge', 'data-tone': 'warn', key: 'broken', title: row.dangling === true ? L.danglingHint : row.problem }, h(IconWarning, { size: 11 }), L.broken));
 			} else if (row.linkTarget !== void 0 && row.linkTarget !== null) {
 				/* A linked skill is worth naming: its files live outside the skill
 				 * root, which is why switching it off moves the link instead of
@@ -607,8 +611,8 @@
 					'div',
 					{ className: 'dsh-skm-rowMain' },
 					h('div', { className: 'dsh-skm-rowName' }, h('span', { className: 'dsh-skm-rowNameText', title: row.name }, row.name), badges),
-					summary !== void 0 && summary.length > 0 ? h('div', { className: 'dsh-skm-rowDesc', title: summary }, summary) : row.problem !== void 0 ? h('div', { className: 'dsh-skm-rowDesc' }, row.problem) : null,
-					h('div', { className: 'dsh-skm-rowPath', title: row.file }, row.file)
+					summary !== void 0 && summary.length > 0 ? h('div', { className: 'dsh-skm-rowDesc', title: summary }, summary) : row.problem !== void 0 ? h('div', { className: 'dsh-skm-rowDesc' }, row.dangling === true ? L.danglingHint : row.problem) : null,
+					h('div', { className: 'dsh-skm-rowPath', title: row.file }, h('bdi', null, row.file))
 				),
 				h(
 					'div',
@@ -626,7 +630,7 @@
 						},
 						h(IconTrash, { size: 15 })
 					),
-					h(SwitchControl, { checked: row.enabled, disabled: busy, label: row.name, onChange: (next) => onToggle(row, next) })
+					h(SwitchControl, { checked: row.enabled, disabled: busy || row.dangling === true, label: row.name, onChange: (next) => onToggle(row, next) })
 				)
 			);
 		}
@@ -1448,8 +1452,8 @@
 									h(Button, { key: 'go', variant: 'primary', size: 'sm', disabled: anyBusy, onClick: confirmDelete }, L.deleteConfirm)
 								]
 							},
-							h('p', { className: 'dsh-skm-dialogBody' }, format(L.deleteBody, { name: pendingDelete.name })),
-							h('div', { className: 'dsh-skm-rowPath', title: pendingDelete.file }, pendingDelete.file)
+							h('p', { className: 'dsh-skm-dialogBody' }, format(pendingDelete.dangling === true ? L.deleteDanglingBody : L.deleteBody, { name: pendingDelete.name })),
+							h('div', { className: 'dsh-skm-rowPath', title: pendingDelete.file }, h('bdi', null, pendingDelete.file))
 						)
 					: null,
 				external !== null
