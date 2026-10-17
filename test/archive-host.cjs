@@ -298,12 +298,42 @@ function call(handler, method, body, extraHeaders) {
 		check('the orphan directory is ""', orphan.directory === '');
 		check('the orphan archivedAt is 0', orphan.archivedAt === 0);
 		check('the orphan createdAt is 0', orphan.createdAt === 0);
+
 		check('the orphan title is ""', orphan.title === '');
 		check(
 			'one title snapshot call covers every archived id',
 			queryCalls.title.length === 1 && sameJson(queryCalls.title[0], [s1, s2, s3])
 		);
 		check('the in-memory store is consulted for liveness', memoryCalls.includes(s1));
+
+		/* ── running vs open ──────────────────────────────────────────── */
+
+		const controller = {
+			async list() {
+				return {
+					items: [
+						{ sessionId: s1, running: true, agentAvailable: true, blank: false, updatedAt: 1 },
+						{ sessionId: s2, running: false, agentAvailable: true, blank: false, updatedAt: 2 }
+					]
+				};
+			}
+		};
+		const withController = await call(makeHandler({ controller: () => controller }), 'list', {});
+		const summaryRows = [];
+		for (const project of withController.body.value.projects) summaryRows.push(...project.sessions);
+		summaryRows.push(...withController.body.value.ungrouped.sessions);
+		const byId = new Map(summaryRows.map((row) => [row.id, row]));
+		check('a summary with running=true marks the row running', byId.get(s1).running === true);
+		check('a summary with agentAvailable=true marks the row live', byId.get(s1).live === true);
+		check('an idle open session is live but not running', byId.get(s2).live === true && byId.get(s2).running === false);
+		check('a composition without a controller reports running=false', rowA.running === false);
+
+		const brokenController = await call(
+			makeHandler({ controller: () => ({ list: async () => { throw new Error('controller unavailable'); } }) }),
+			'list',
+			{}
+		);
+		check('a failing controller degrades to an empty summary map', brokenController.body.ok === true && brokenController.body.value.total === 3);
 
 		/* ── degraded compositions ─────────────────────────────────────── */
 
@@ -338,7 +368,7 @@ function call(handler, method, body, extraHeaders) {
 		check('delete refuses a live session', liveDelete.body.value.deleted.length === 0 && liveDelete.body.value.failed.length === 1);
 		check(
 			'delete explains the live refusal',
-			liveDelete.body.value.failed[0].sessionId === s1 && liveDelete.body.value.failed[0].message.includes('live agent')
+			liveDelete.body.value.failed[0].sessionId === s1 && liveDelete.body.value.failed[0].message.includes('live agent') && liveDelete.body.value.failed[0].code === 'live'
 		);
 		check('a live refusal leaves the session directory alone', fs.existsSync(dirS1));
 		check('a live refusal detaches nothing', calls.detach.length === detachBefore);
@@ -347,13 +377,13 @@ function call(handler, method, body, extraHeaders) {
 		check(
 			'delete refuses a malformed id',
 			badDelete.body.value.deleted.length === 0 &&
-				badDelete.body.value.failed[0].message.includes('malformed')
+				badDelete.body.value.failed[0].message.includes('malformed') && badDelete.body.value.failed[0].code === 'malformed'
 		);
 		const notArchived = await invoke('delete', { sessionIds: [s4] });
 		check(
 			'delete refuses a non-archived id',
 			notArchived.body.value.deleted.length === 0 &&
-				notArchived.body.value.failed[0].message.includes('not archived')
+				notArchived.body.value.failed[0].message.includes('not archived') && notArchived.body.value.failed[0].code === 'not-archived'
 		);
 		const badBody = await invoke('delete', {});
 		check(
@@ -401,7 +431,7 @@ function call(handler, method, body, extraHeaders) {
 			'delete refuses a symlinked session directory',
 			symlinkDelete.body.value.deleted.length === 0 &&
 				symlinkDelete.body.value.failed.length === 1 &&
-				symlinkDelete.body.value.failed[0].message.includes('symbolic link')
+				symlinkDelete.body.value.failed[0].message.includes('symbolic link') && symlinkDelete.body.value.failed[0].code === 'unsafe'
 		);
 		check('a symlink refusal does not follow the link', fs.existsSync(outsideFile));
 		check('a symlink refusal leaves the id archived', archive.readArchivedIds(home).includes(symlinkId));

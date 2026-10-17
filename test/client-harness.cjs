@@ -393,7 +393,8 @@ async function main() {
 						bytes: 2048,
 						directory: '/home/u/.dsh/sessions/a/session-aaaaaaaa-1111-4222-8333-444444444444',
 						exists: true,
-						live: false
+						live: true,
+						running: true
 					},
 					{
 						id: 'session-bbbbbbbb-1111-4222-8333-444444444444',
@@ -404,7 +405,8 @@ async function main() {
 						bytes: 1024,
 						directory: '/home/u/.dsh/sessions/a/session-bbbbbbbb-1111-4222-8333-444444444444',
 						exists: true,
-						live: false
+						live: true,
+						running: false
 					}
 				]
 			},
@@ -424,7 +426,8 @@ async function main() {
 						bytes: 0,
 						directory: '',
 						exists: false,
-						live: false
+						live: false,
+						running: false
 					}
 				]
 			}
@@ -1027,11 +1030,37 @@ async function main() {
 		assert.match(text, /未命名会话/u, 'an untitled session gets a localized fallback');
 		assert.match(text, /金蝶套件/u);
 		assert.match(text, /日志缺失/u, 'a missing log is labelled');
+		assert.match(text, /运行中/u, 'a session with running=true is labelled 运行中');
+		assert.match(text, /已打开/u, 'a live-but-idle session is labelled 已打开, not 运行中');
 		assert.match(text, /重新激活/u);
 		assert.match(text, /删除/u);
 		const rows = findAll(tree, (node) => node.kind === 'host' && node.props && node.props['data-session'] !== void 0);
 		assert.equal(rows.length, 3, 'every archived session must have a row');
 		assert.equal(rows.filter((row) => String(row.props['data-session']).includes('aaaaaaaa')).length, 1);
+	});
+
+	test('a refused delete explains that the session is still open', async () => {
+		const tree = await archivePage({
+			answers: {
+				delete: (payload) => ({
+					ok: true,
+					value: {
+						deleted: [],
+						bytes: 0,
+						failed: payload.sessionIds.map((id) => ({ sessionId: id, code: 'live', message: 'a live agent owns this session' }))
+					}
+				})
+			}
+		});
+		const row = findAll(tree, (node) => node.kind === 'host' && String(node.props && node.props['data-session']).includes('aaaaaaaa'))[0];
+		buttonsLabelled(row, '删除')[0].props.onClick();
+		await runtime.flush();
+		findAll(runtime.getTree(), (node) => node.kind === 'host' && node.props && node.props.className === 'dsh-am-confirmGo')[0].props.onClick();
+		await runtime.flush();
+		const text = textOf(runtime.getTree());
+		assert.match(text, /删除失败/u);
+		assert.match(text, /仍在窗口中打开/u, 'the coded refusal is localized, not the raw English message');
+		assert.doesNotMatch(text, /a live agent owns this session/u);
 	});
 
 	test('the archive search box filters rows by title, project and path', async () => {

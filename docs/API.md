@@ -76,8 +76,15 @@ Field rules:
 - `exists` is `false` for an archived id whose log is no longer on disk; such a
   row can still be restored (unarchiving only drops the id) but not deleted for
   space.
-- `live` is `true` when a live Agent owns the session; the page refuses to
-  delete those (the host refuses too).
+- `live` is `true` when a live Agent still owns the session. Archiving hides a
+  session from the workspace surfaces but does not close the window that has it
+  open, so an archived session is routinely live. A live session is refused by
+  `delete` (the page labels it 已打开 / Open and tells the user to switch away).
+- `running` is `true` only while a turn is actually executing for that session.
+  It comes from `sessionController.list()`'s `SessionSummary.running` — the
+  authoritative live-control fact — not from `live`, so an open-but-idle
+  session reads 已打开 rather than 运行中. Both flags fall back to `false` when
+  that service is absent or its call fails.
 - `total`/`bytes` are the sums of `projects[].total`/`bytes` plus
   `ungrouped`.
 
@@ -107,7 +114,9 @@ Value:
 {
   "deleted": ["session-<uuid>"],
   "bytes": 12000,
-  "failed": [{ "sessionId": "session-<uuid>", "message": "a live agent owns this session" }]
+  "failed": [
+    { "sessionId": "session-<uuid>", "code": "live", "message": "a live agent owns this session" }
+  ]
 }
 ```
 
@@ -116,3 +125,14 @@ workspace, unarchives it, then removes the session directory and the projection
 cache record. A session that is live, that is not archived, or whose id does not
 match the `session-<uuid>` grammar is refused per-item rather than aborting the
 batch.
+
+Each `failed[]` entry carries a stable `code` beside the human message so the
+page can localize the refusal instead of printing Host English:
+
+| `code` | Meaning |
+| --- | --- |
+| `live` | a live Agent still owns the session (switch to another session first) |
+| `not-archived` | the session is not in the archive set (already restored or deleted) |
+| `malformed` | the id does not match `session-<uuid>` |
+| `unsafe` | the on-disk target failed a containment/symlink/reality check |
+| `failed` | any other per-item failure; `message` is the reason |

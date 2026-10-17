@@ -92,7 +92,13 @@
 			unnamed: '未命名会话',
 			unnamedProject: '未命名项目',
 			logMissing: '日志缺失',
-			live: '运行中',
+			running: '运行中',
+			openBadge: '已打开',
+			runningHint: '这一轮正在执行',
+			openHint: '会话仍在窗口中打开；切换到其他会话后即可删除',
+			failLive: '会话仍在窗口中打开，先切换到其他会话再删除',
+			failNotArchived: '该会话已不在归档列表中',
+			failMalformed: '会话 id 不合法',
 			restore: '重新激活',
 			restoreAll: '全部重新激活',
 			delete: '删除',
@@ -132,7 +138,13 @@
 			unnamed: 'Untitled session',
 			unnamedProject: 'Untitled project',
 			logMissing: 'Log missing',
-			live: 'Live',
+			running: 'Running',
+			openBadge: 'Open',
+			runningHint: 'A turn is executing right now',
+			openHint: 'Still open in a window; switch to another session to delete it',
+			failLive: 'The session is still open in a window; switch to another session first',
+			failNotArchived: 'The session is no longer archived',
+			failMalformed: 'Malformed session id',
 			restore: 'Restore',
 			restoreAll: 'Restore all',
 			delete: 'Delete',
@@ -628,8 +640,13 @@
 		if (session.exists === false) {
 			badges.push(h('span', { key: 'missing', className: 'dsh-am-badge', 'data-tone': 'warn' }, L.logMissing));
 		}
-		if (session.live === true) {
-			badges.push(h('span', { key: 'live', className: 'dsh-am-badge', 'data-tone': 'success' }, L.live));
+		if (session.running === true) {
+			badges.push(h('span', { key: 'running', className: 'dsh-am-badge', 'data-tone': 'warn', title: L.runningHint }, L.running));
+		} else if (session.live === true) {
+			/* Archiving hides a session from the workspace list; it does not close
+			 * the window that still has it open, so a live-but-idle archived
+			 * session is a normal state, not a running turn. */
+			badges.push(h('span', { key: 'open', className: 'dsh-am-badge', 'data-tone': 'info', title: L.openHint }, L.openBadge));
 		}
 		return h(
 			'div',
@@ -855,6 +872,15 @@
 			return typeof id === 'string' && id.length > 0 ? id : L.unnamed;
 		}, []);
 
+		/** Localized text for one host failure: its per-item code wins over the raw message. */
+		const failureText = React.useCallback((item) => {
+			const code = item !== null && item !== void 0 && typeof item.code === 'string' ? item.code : '';
+			if (code === 'live') return L.failLive;
+			if (code === 'not-archived') return L.failNotArchived;
+			if (code === 'malformed') return L.failMalformed;
+			return item !== null && item !== void 0 && typeof item.message === 'string' ? item.message : L.unavailable;
+		}, []);
+
 		const restoreSessions = React.useCallback(
 			async (ids, busyInfo) => {
 				const targets = Array.from(
@@ -874,13 +900,13 @@
 				if (failed.length > 0) {
 					setActionError({
 						message: format(L.restoreFailed, { count: failed.length }),
-						details: failed.slice(0, 3).map((item) => sessionLabel(item.sessionId) + (zhActive ? '：' : ': ') + item.message),
+						details: failed.slice(0, 3).map((item) => sessionLabel(item.sessionId) + (zhActive ? '：' : ': ') + failureText(item)),
 						more: Math.max(0, failed.length - 3),
 						retry: { kind: 'restore', ids: failed.map((item) => item.sessionId), busyInfo: info }
 					});
 				}
 			},
-			[beginBusy, endBusy, load, sessionLabel]
+			[beginBusy, endBusy, failureText, load, sessionLabel]
 		);
 
 		const deleteSessions = React.useCallback(
@@ -916,8 +942,7 @@
 							message: format(L.deleteFailed, { count: failed.length }),
 							details: failed.slice(0, 3).map((entry) => {
 								const id = entry && typeof entry.sessionId === 'string' ? entry.sessionId : '';
-								const message = entry && entry.message ? String(entry.message) : L.loadFailed;
-								return sessionLabel(id) + (zhActive ? '：' : ': ') + message;
+								return sessionLabel(id) + (zhActive ? '：' : ': ') + failureText(entry);
 							}),
 							more: Math.max(0, failed.length - 3),
 							retry: failedIds.length > 0 ? { kind: 'delete', ids: failedIds, busyInfo: info } : null

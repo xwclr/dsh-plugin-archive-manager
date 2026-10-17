@@ -53,6 +53,9 @@ const fakeWorkspaces = [
 /** Sessions the fake `sessionQuery` reports, newest first is the tests' job. */
 const sessionRecords = [];
 
+/** Summaries the fake `sessionController` reports (running / agentAvailable). */
+const controllerItems = [];
+
 /** Ids the fake registry says are archived (the host reads the store instead). */
 const unarchived = [];
 
@@ -118,6 +121,9 @@ function fakeContext() {
 				};
 			}
 			if (name === 'sessionQuery') return fakeQuery;
+			if (name === 'sessionController') {
+				return { list: async () => ({ items: controllerItems }) };
+			}
 			if (name === 'sessions') return { get: () => void 0 };
 			if (name === 'skills') {
 				return {
@@ -475,6 +481,7 @@ async function main() {
 		fs.writeFileSync(path.join(directory, 'session.v4.jsonl.zstd'), Buffer.alloc(2048));
 		writeArchiveStore([id]);
 		sessionRecords.push({ header: { id, cwd: workspace, createdAt: 1000 }, live: false, persisted: true, title: '归档的那个' });
+		controllerItems.push({ sessionId: id, running: true, agentAvailable: true, blank: false, updatedAt: 1000 });
 		fakeWorkspaces[0].sessionIds = [id];
 		const result = await archiveCall(port, 'list', {});
 		assert.equal(result.body.ok, true, `list failed: ${result.body.error && result.body.error.message}`);
@@ -487,6 +494,8 @@ async function main() {
 		assert.equal(project.sessions[0].exists, true);
 		assert.equal(project.sessions[0].bytes, 2048);
 		assert.ok(project.sessions[0].archivedAt > 0, 'the log mtime stands in for the archive time');
+		assert.equal(project.sessions[0].running, true, 'the controller summary supplies the running flag');
+		assert.equal(project.sessions[0].live, true, 'agentAvailable marks the row live');
 	});
 
 	test('restores an archived session over HTTP', async () => {
