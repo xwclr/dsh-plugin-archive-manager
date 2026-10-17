@@ -1039,7 +1039,7 @@ async function main() {
 		assert.equal(rows.filter((row) => String(row.props['data-session']).includes('aaaaaaaa')).length, 1);
 	});
 
-	test('a refused delete explains that the session is still open', async () => {
+	test('a refused delete explains that a turn is still running', async () => {
 		const tree = await archivePage({
 			answers: {
 				delete: (payload) => ({
@@ -1047,7 +1047,7 @@ async function main() {
 					value: {
 						deleted: [],
 						bytes: 0,
-						failed: payload.sessionIds.map((id) => ({ sessionId: id, code: 'live', message: 'a live agent owns this session' }))
+						failed: payload.sessionIds.map((id) => ({ sessionId: id, code: 'running', message: 'a turn is running for this session: stop it before deleting' }))
 					}
 				})
 			}
@@ -1059,8 +1059,8 @@ async function main() {
 		await runtime.flush();
 		const text = textOf(runtime.getTree());
 		assert.match(text, /删除失败/u);
-		assert.match(text, /仍在窗口中打开/u, 'the coded refusal is localized, not the raw English message');
-		assert.doesNotMatch(text, /a live agent owns this session/u);
+		assert.match(text, /正在执行/u, 'the coded refusal is localized, not the raw English message');
+		assert.doesNotMatch(text, /a turn is running/u);
 	});
 
 	test('the archive search box filters rows by title, project and path', async () => {
@@ -1099,6 +1099,9 @@ async function main() {
 		remove.props.onClick();
 		await runtime.flush();
 		assert.equal(archiveRequests.filter((request) => request.method === 'delete').length, 0, 'nothing may be deleted before confirmation');
+		const confirmation = findAll(runtime.getTree(), (node) => node.kind === 'host' && node.props && node.props.className === 'dsh-am-confirm')[0];
+		assert.ok(confirmation !== void 0, 'the inline confirmation must render');
+		assert.match(textOf(confirmation), /仍在窗口中打开/u, 'an open session warns that deleting it invalidates the window');
 		const go = findAll(runtime.getTree(), (node) => node.kind === 'host' && node.props && node.props.className === 'dsh-am-confirmGo')[0];
 		assert.ok(go !== void 0, 'the inline confirmation must render a confirm button');
 		go.props.onClick();

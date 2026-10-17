@@ -365,9 +365,12 @@ function call(handler, method, body, extraHeaders) {
 		const detachBefore = calls.detach.length;
 		const liveDelete = await invoke('delete', { sessionIds: [s1] });
 		check('delete answers in the 200 envelope', liveDelete.status === 200 && liveDelete.body.ok === true);
-		check('delete refuses a live session', liveDelete.body.value.deleted.length === 0 && liveDelete.body.value.failed.length === 1);
 		check(
-			'delete explains the live refusal',
+			'without a running source, a live session is refused conservatively',
+			liveDelete.body.value.deleted.length === 0 && liveDelete.body.value.failed.length === 1
+		);
+		check(
+			'the conservative refusal explains itself',
 			liveDelete.body.value.failed[0].sessionId === s1 && liveDelete.body.value.failed[0].message.includes('live agent') && liveDelete.body.value.failed[0].code === 'live'
 		);
 		check('a live refusal leaves the session directory alone', fs.existsSync(dirS1));
@@ -406,10 +409,36 @@ function call(handler, method, body, extraHeaders) {
 		check('delete removes the cache record in the first projcache root', fs.existsSync(cacheS2PathA) === false);
 		check('delete removes the cache record in every projcache sibling', fs.existsSync(cacheS2PathB) === false);
 		check('delete leaves other sessions\u2019 cache records alone', fs.existsSync(cacheS1Path));
+
 		check('delete detaches from the accounting workspace', calls.detach.includes(`ws-b:${s2}`));
 		check('delete drops the workspace accounting', !workspaces[1].sessionIds.includes(s2));
 		check('delete unarchives through the registry', calls.unarchive.length === unarchiveBefore + 1 && calls.unarchive.includes(s2));
 		check('delete drops the id from the durable set', !archive.readArchivedIds(home).includes(s2));
+
+		/* ── delete: running vs open ──────────────────────────────────── */
+
+		const runningHandler = makeHandler({
+			controller: () => ({ list: async () => ({ items: [{ sessionId: s3, running: true, agentAvailable: true }] }) })
+		});
+		const runningDelete = await call(runningHandler, 'delete', { sessionIds: [s3] });
+		check(
+			'a running turn refuses the delete',
+			runningDelete.body.value.deleted.length === 0 &&
+				runningDelete.body.value.failed[0].code === 'running' &&
+				runningDelete.body.value.failed[0].message.includes('a turn is running')
+		);
+		check('a running refusal unarchives nothing', archive.readArchivedIds(home).includes(s3));
+
+		archived.add(s1);
+		writeWorkspace();
+		const openHandler = makeHandler({
+			controller: () => ({ list: async () => ({ items: [{ sessionId: s1, running: false, agentAvailable: true }] }) })
+		});
+		const openDelete = await call(openHandler, 'delete', { sessionIds: [s1] });
+		check('a live but idle session is deletable', sameJson(openDelete.body.value.deleted, [s1]), JSON.stringify(openDelete.body.value.failed));
+		check('deleting an open session removes its directory', fs.existsSync(dirS1) === false);
+		check('deleting an open session removes its cache record', fs.existsSync(cacheS1Path) === false);
+		check('deleting an open session unarchives it', !archive.readArchivedIds(home).includes(s1));
 
 		/* ── delete: symlink guard ─────────────────────────────────────── */
 

@@ -78,8 +78,10 @@ Field rules:
   space.
 - `live` is `true` when a live Agent still owns the session. Archiving hides a
   session from the workspace surfaces but does not close the window that has it
-  open, so an archived session is routinely live. A live session is refused by
-  `delete` (the page labels it 已打开 / Open and tells the user to switch away).
+  open, so an archived session is routinely live. `live` is a **display** fact
+  only: the page labels it 已打开 / Open, and `delete` proceeds anyway (deleting
+  an open session invalidates that window until it reloads). Only a *running*
+  turn refuses the delete.
 - `running` is `true` only while a turn is actually executing for that session.
   It comes from `sessionController.list()`'s `SessionSummary.running` — the
   authoritative live-control fact — not from `live`, so an open-but-idle
@@ -122,16 +124,18 @@ Value:
 
 Delete is destructive and has no undo: it detaches the session from its
 workspace, unarchives it, then removes the session directory and the projection
-cache record. A session that is live, that is not archived, or whose id does not
-match the `session-<uuid>` grammar is refused per-item rather than aborting the
-batch.
+cache record. An open (live) session is deletable — the window that still has it
+loses the session until it reloads. A session whose turn is **running**, that is
+not archived, or whose id does not match the `session-<uuid>` grammar is refused
+per-item rather than aborting the batch.
 
 Each `failed[]` entry carries a stable `code` beside the human message so the
 page can localize the refusal instead of printing Host English:
 
 | `code` | Meaning |
 | --- | --- |
-| `live` | a live Agent still owns the session (switch to another session first) |
+| `running` | a turn is executing for the session (stop it, then delete) |
+| `live` | a live Agent owns the session and the running flag was unavailable, so the delete refused conservatively |
 | `not-archived` | the session is not in the archive set (already restored or deleted) |
 | `malformed` | the id does not match `session-<uuid>` |
 | `unsafe` | the on-disk target failed a containment/symlink/reality check |

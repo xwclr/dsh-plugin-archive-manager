@@ -512,6 +512,18 @@ async function main() {
 		assert.match(result.body.error.message, /valid session id/u);
 	});
 
+	test('refuses to delete while a turn is running', async () => {
+		const id = fakeWorkspaces[0].sessionIds[0];
+		controllerItems.length = 0;
+		controllerItems.push({ sessionId: id, running: true, agentAvailable: true, blank: false, updatedAt: 1000 });
+		const result = await archiveCall(port, 'delete', { sessionIds: [id] });
+		assert.equal(result.body.ok, true, `delete failed: ${result.body.error && result.body.error.message}`);
+		assert.deepEqual(result.body.value.deleted, []);
+		assert.equal(result.body.value.failed[0].code, 'running');
+		assert.equal(fs.existsSync(path.join(home, 'sessions', '--scratch-workspace--', id)), true, 'a running session keeps its log');
+		controllerItems.length = 0;
+	});
+
 	test('deletes an archived session and its log over HTTP', async () => {
 		const id = fakeWorkspaces[0].sessionIds[0];
 		const directory = path.join(home, 'sessions', '--scratch-workspace--', id);
