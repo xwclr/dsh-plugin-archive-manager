@@ -1,0 +1,1659 @@
+/**
+ * Skill Manager — browser half.
+ *
+ * Adds a **技能** entry to the sidebar's global panel list, right below the
+ * shipped Plugins and Automation tasks rows, opening a full-page manager in the
+ * shape this feature takes elsewhere in the product: a scope switch in the
+ * header (user-wide, or one workspace), a search field, and one row per skill
+ * with a switch and a delete button.
+ *
+ * Everything the page shows comes from the host half over
+ * `/skill-manager/api/<method>`; no knowledge of the skill roots is duplicated
+ * here. The page never touches a filesystem itself, which keeps "which
+ * directory is this skill in, and is it safe to write" in exactly one place.
+ *
+ * Registration notes that are load-bearing:
+ * - The module facade's spelling differs by boot path (`__ModuleLoader__` on the
+ *   window, `_ModuleLoader__` in shipped bundles), so it is resolved by lookup.
+ * - `inject` lists only services this plugin truly requires; a missing entry
+ *   parks the whole fiber, so optional capabilities (the directory picker, the
+ *   workspace service, the open-in-app remote) are read through `ctx.get` at
+ *   call time and degrade to a clear message instead.
+ * - `sidebar.panellist` holds the global panel icons and `main` is the keyed
+ *   panel seat the shell renders for the selected id; both are contributed
+ *   through `slots.inject`, because neither owner guarantees an apply order.
+ * - Every component is declared once at module scope. A component created
+ *   inside a render gets a new identity each time and would remount its subtree,
+ *   dropping the text a user is typing.
+ */
+
+const __skillManagerFacade =
+	(typeof _ModuleLoader__ !== 'undefined' ? _ModuleLoader__ : void 0) ||
+	(typeof globalThis !== 'undefined' ? globalThis.__ModuleLoader__ : void 0);
+
+if (__skillManagerFacade === void 0 || typeof __skillManagerFacade.load !== 'function') {
+	throw new Error('skill-manager: the module registration facade is missing');
+}
+
+__skillManagerFacade.load({
+	id: 'dsh-plugin-skill-manager',
+	factory: (require) => {
+		var module = { exports: {} };
+		var exports = module.exports;
+		Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
+
+		const React = require('react');
+		const h = React.createElement;
+
+		/**
+		 * The design system is an implicit baseline external, but a deployment that
+		 * cannot answer it must still mount the page: a throw at module scope would
+		 * fail the entry, and the boot audit with it.
+		 */
+		let design = null;
+		try {
+			design = require('@deepseek-ai/dsh-client-ui-primitives');
+		} catch (failure) {
+			design = null;
+		}
+
+		const PLUGIN_ID = 'dsh-plugin-skill-manager';
+		/** One id shared by the sidebar row and the main panel it opens. */
+		const PANEL_ID = 'skills';
+		/** Where the host half mounts its JSON API. */
+		const API = '/skill-manager/api';
+
+		/** An icon component, or an inert placeholder when the design system is absent. */
+		const icon = (name) =>
+			(design && design[name]) ||
+			((props) => {
+				const size = props && props.size ? props.size : 16;
+				return h('span', { className: 'dsh-skm-glyph', style: { width: size, height: size } });
+			});
+		const IconSkill = icon('IconSkillOutlineRegular');
+		const IconTrash = icon('IconTrashOutlineRegular');
+		const IconPlus = icon('IconPlusOutlineRegular');
+		const IconRefresh = icon('IconRefreshOutlineRegular');
+		const IconSearch = icon('IconSearchOutlineRegular');
+		const IconChevronDown = icon('IconChevronDownOutlineRegular');
+		const IconCheck = icon('IconCheckOutlineRegular');
+		const IconWarning = icon('IconWarningTriangleOutlineRegular');
+		const IconInfo = icon('IconInfoOutlineRegular');
+		const IconClose = icon('IconCloseOutlineRegular');
+		const IconEllipsis = icon('IconEllipsisOutlineRegular');
+		const IconGlobe = icon('IconGlobeOutlineRegular');
+		const IconFolder = icon('IconFolderOpenOutlineRegular');
+		const IconLoading = icon('IconLoadingOutlineRegular');
+		const IconBrowse = icon('IconBrowseOutlineRegular');
+		const IconChevronRight = icon('IconChevronRightOutlineRegular');
+
+		/** The two design-system atoms the page is built from, with minimal stand-ins. */
+		const Button =
+			(design && design.Button) ||
+			((props) =>
+				h(
+					'button',
+					{ type: 'button', className: 'dsh-skm-plainButton', disabled: props.disabled, onClick: props.onClick, title: props.title },
+					props.icon === void 0 ? null : props.icon,
+					props.children
+				));
+		const SwitchControl =
+			(design && design.Switch) ||
+			((props) =>
+				h(
+					'button',
+					{
+						type: 'button',
+						role: 'switch',
+						'aria-checked': props.checked,
+						'aria-label': props.label,
+						disabled: props.disabled,
+						className: 'dsh-skm-plainSwitch',
+						onClick: () => props.onChange(!props.checked)
+					},
+					props.checked ? 'on' : 'off'
+				));
+
+		/** Page copy. Plain dictionaries so the active language is resolved at render time. */
+		const STRINGS = {
+			zh: {
+				panel: '技能',
+				title: '技能',
+				scopeUser: '用户',
+				scopeLabel: '技能范围',
+				workspaceSection: '工作区',
+				search: '搜索技能…',
+				searchClear: '清除搜索',
+				create: '新建',
+				createTitle: '新建技能',
+				createName: '技能名称',
+				createNameHint: '仅小写字母、数字与单个连字符，例如 my-skill',
+				createDescription: '一句话说明这个技能做什么、什么时候用它',
+				createScope: '创建到',
+				createConfirm: '创建',
+				createCancel: '取消',
+				importButton: '导入技能',
+				importMenuLocal: '从磁盘导入…',
+				importMenuExternal: '导入外部 Agent 技能…',
+				externalTitle: '导入外部 Agent 技能',
+				externalIntro: '这些是本机其他 Agent 工具里的技能，选择要导入的条目。',
+				externalScanning: '正在扫描外部技能…',
+				externalNone: '没有发现外部技能',
+				externalNoneBody: '本机没有找到 Claude Code、ZCode、WorkBuddy 等工具的技能目录。',
+				externalRescan: '重新扫描',
+				externalSelectAll: '全选',
+				externalClearAll: '取消全选',
+				externalSelected: '已选 {count}/{total}',
+				externalSkills: '{count} 个技能',
+				externalNested: '分层',
+				externalNestedHint: '这个技能在命名空间目录里，导入时会摊平到根目录',
+				externalMode: '导入方式',
+				externalModeCopy: '复制',
+				externalModeCopyHint: '复制一份到本地，源目录改动不再同步',
+				externalModeLink: '软链',
+				externalModeLinkHint: '建立符号链接，源目录改动立即生效，不占空间',
+				externalTarget: '导入到',
+				externalTargetGlobal: '全局',
+				externalTargetProject: '项目',
+				externalImport: '导入',
+				externalCancel: '取消',
+				externalImported: '已导入 {count} 个外部技能',
+				externalNoSelection: '请先选择要导入的技能',
+				externalAlready: '已存在',
+				linked: '软链',
+				linkedHint: '这是一个符号链接，指向外部工具的技能目录；停用只会移动链接，不会改动源目录',
+				importHint: '选择一个包含 SKILL.md 的文件夹、一个装着多个技能的文件夹，或一个 .md 技能文件',
+				refresh: '重新扫描',
+				emptyTitle: '尚未安装技能',
+				emptyBody: '新建一个技能，或从外部导入已有技能。',
+				noMatch: '没有匹配的技能',
+				noMatchBody: '换个关键词，或清除搜索条件。',
+				installed: '已安装',
+				disabledGroup: '已停用',
+				broken: '无法解析',
+				shadowed: '被同名技能覆盖',
+				shadowedHint: '同名技能在更高优先级的目录里，当前生效的是那一个',
+				loading: '正在读取技能列表…',
+				errorTitle: '无法读取技能列表',
+				retry: '重试',
+				deleteTitle: '删除技能',
+				deleteBody: '将从磁盘上删除「{name}」，此操作无法撤销。',
+				deleteConfirm: '删除',
+				deleteCancel: '取消',
+				copyPath: '复制路径',
+				copied: '已复制路径',
+				reveal: '在访达中显示',
+				revealFailed: '无法在访达中显示：{reason}',
+				revealUnavailable: '无法在访达中显示：这台机器上没有可用的文件管理器',
+				importedOne: '已导入「{name}」',
+				importedMany: '已导入 {count} 个技能',
+				shadowWarn: '「{name}」被更高优先级的同名技能覆盖，模型不会看到它',
+				createdOne: '已创建「{name}」',
+				removed: '已删除「{name}」',
+				noSession: '当前没有打开的工作区',
+				unavailable: '宿主侧接口不可用',
+				scopeHelpGlobal: '对所有工作区生效',
+				scopeHelpProject: '只对当前工作区生效',
+				close: '关闭'
+			},
+			en: {
+				panel: 'Skills',
+				title: 'Skills',
+				scopeUser: 'User',
+				scopeLabel: 'Skill scope',
+				workspaceSection: 'Workspaces',
+				search: 'Search skills…',
+				searchClear: 'Clear search',
+				create: 'New',
+				createTitle: 'New skill',
+				createName: 'Skill name',
+				createNameHint: 'Lowercase letters, digits and single dashes, e.g. my-skill',
+				createDescription: 'One line on what it does and when to use it',
+				createScope: 'Create in',
+				createConfirm: 'Create',
+				createCancel: 'Cancel',
+				importButton: 'Import skill',
+				importMenuLocal: 'Import from disk…',
+				importMenuExternal: 'Import external agent skills…',
+				externalTitle: 'Import external agent skills',
+				externalIntro: 'Skills found in other agent tools on this machine. Choose what to bring over.',
+				externalScanning: 'Scanning external skills…',
+				externalNone: 'No external skills found',
+				externalNoneBody: 'No skill directory for Claude Code, ZCode, WorkBuddy or a similar tool was found.',
+				externalRescan: 'Rescan',
+				externalSelectAll: 'Select all',
+				externalClearAll: 'Clear all',
+				externalSelected: 'Selected {count}/{total}',
+				externalSkills: '{count} skills',
+				externalNested: 'Nested',
+				externalNestedHint: 'This skill sits in a namespace folder; importing flattens it into the root',
+				externalMode: 'Import as',
+				externalModeCopy: 'Copy',
+				externalModeCopyHint: 'Duplicate it locally; later source edits are no longer picked up',
+				externalModeLink: 'Link',
+				externalModeLinkHint: 'Symlink it; source edits apply immediately and nothing is duplicated',
+				externalTarget: 'Import to',
+				externalTargetGlobal: 'Global',
+				externalTargetProject: 'Project',
+				externalImport: 'Import',
+				externalCancel: 'Cancel',
+				externalImported: 'Imported {count} external skills',
+				externalNoSelection: 'Select at least one skill to import',
+				externalAlready: 'exists',
+				linked: 'Linked',
+				linkedHint: 'A symlink into another tool\'s skill directory; disabling moves the link and never edits the source',
+				importHint: 'Pick a folder holding SKILL.md, a folder of several skills, or a .md skill file',
+				refresh: 'Rescan',
+				emptyTitle: 'No skills installed',
+				emptyBody: 'Create one, or import existing skills from elsewhere.',
+				noMatch: 'No matching skills',
+				noMatchBody: 'Try another word, or clear the search.',
+				installed: 'Installed',
+				disabledGroup: 'Disabled',
+				broken: 'Unreadable',
+				shadowed: 'Shadowed by a same-named skill',
+				shadowedHint: 'A same-named skill in a higher-precedence directory wins',
+				loading: 'Reading the skill list…',
+				errorTitle: 'Could not read the skill list',
+				retry: 'Retry',
+				deleteTitle: 'Delete skill',
+				deleteBody: 'This removes “{name}” from disk. It cannot be undone.',
+				deleteConfirm: 'Delete',
+				deleteCancel: 'Cancel',
+				copyPath: 'Copy path',
+				copied: 'Path copied',
+				reveal: 'Reveal in file manager',
+				revealFailed: 'Could not reveal in the file manager: {reason}',
+				revealUnavailable: 'Could not reveal: no file manager is available on this machine',
+				importedOne: 'Imported “{name}”',
+				importedMany: 'Imported {count} skills',
+				shadowWarn: '“{name}” is shadowed by a higher-precedence skill of the same name, so the model will not see it',
+				createdOne: 'Created “{name}”',
+				removed: 'Deleted “{name}”',
+				noSession: 'No workspace is open',
+				unavailable: 'The host-side API is unavailable',
+				scopeHelpGlobal: 'Applies to every workspace',
+				scopeHelpProject: 'Applies to this workspace only',
+				close: 'Close'
+			}
+		};
+
+		/**
+		 * Resolve the active language from the application's locale service.
+		 *
+		 * `document.documentElement.lang` and `navigator.language` follow the
+		 * renderer's launch flag (the desktop shell starts with `--lang=en-US`),
+		 * not the language the product UI is showing, so they are only a fallback.
+		 * @param ctx - client root context.
+		 * @returns whether Chinese copy should be used.
+		 */
+		function detectZh(ctx) {
+			try {
+				const locale = typeof ctx.get === 'function' ? ctx.get('locale') : void 0;
+				if (locale !== void 0 && locale !== null) {
+					const snapshot =
+						typeof locale.getLocale === 'function' ? locale.getLocale() : typeof locale.getSnapshot === 'function' ? locale.getSnapshot() : null;
+					const id = snapshot && (snapshot.id || snapshot.locale || snapshot.language);
+					if (typeof id === 'string' && id.length > 0) return id.toLowerCase().startsWith('zh');
+				}
+			} catch (error) {
+				/* fall through to the document hint */
+			}
+			const lang =
+				(typeof document !== 'undefined' && document.documentElement && document.documentElement.getAttribute('lang')) ||
+				(typeof navigator !== 'undefined' && navigator.language) ||
+				'zh';
+			return String(lang).toLowerCase().startsWith('zh');
+		}
+
+		/** Set once at activation, refreshed on every render. */
+		let zhActive = false;
+		/** Live string table: `L.title` always reads the currently active language. */
+		const L = new Proxy(
+			{},
+			{
+				get(_target, key) {
+					const table = STRINGS[zhActive ? 'zh' : 'en'];
+					const value = table[key];
+					return value === void 0 ? String(key) : value;
+				}
+			}
+		);
+
+		/** Fill `{placeholder}` slots in one copy string. */
+		function format(text, values) {
+			return String(text).replace(/\{(\w+)\}/gu, (whole, key) => (Object.hasOwn(values, key) ? String(values[key]) : whole));
+		}
+
+		const CSS =
+			'.dsh-skm-glyph{display:inline-block;border-radius:4px;background:currentColor;opacity:.25;flex:none}' +
+			'.dsh-skm-plainButton{display:inline-flex;align-items:center;gap:6px;border:.5px solid var(--dsw-alias-border-l3,#d9d9d9);border-radius:10px;background:transparent;color:inherit;padding:6px 12px;font:inherit;cursor:pointer}' +
+			'.dsh-skm-plainSwitch{border:.5px solid var(--dsw-alias-border-l3,#d9d9d9);border-radius:999px;background:transparent;color:inherit;padding:2px 8px;font:inherit;font-size:11px;cursor:pointer}' +
+			'.dsh-skm-page{display:flex;flex-direction:column;height:100%;min-height:0;width:100%;color:var(--dsw-alias-label-primary,#1f1f1f);background:var(--dsw-alias-bg-base,#fff);font-size:14px;line-height:1.6;overflow:hidden}' +
+			/* The window-chrome strip. The desktop shell draws a frameless window
+			 * whose top is the drag handle, so a full-page panel has to leave that
+			 * band empty AND mark it draggable: the shell's own stylesheet turns
+			 * every `[data-window-drag]` element into `-webkit-app-region: drag`
+			 * on macOS. It is pinned above the scroll area rather than being
+			 * padding inside it, so it stays draggable after the page scrolls. */
+			/* macOS only: on Windows the shell frame already reserves the title
+			 * bar as frame padding, so reserving it again here would double the
+			 * gap. The shipped full-page panels scope their clearance the same
+			 * way. */
+			'.dsh-skm-titlebar{display:none;flex:none}' +
+			'html[data-platform=darwin] .dsh-skm-titlebar{display:block;height:var(--dsh-frame-top-clearance,48px);min-height:var(--dsh-frame-top-clearance,48px)}' +
+			'.dsh-skm-scroll{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable;--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l1);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l1)}' +
+			'.dsh-skm-content{max-width:920px;margin:0 auto;padding:0 clamp(24px,4vw,48px) 56px}' +
+			'.dsh-skm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding-top:28px}' +
+			'.dsh-skm-title{margin:0;font-size:22px;font-weight:600;line-height:32px;letter-spacing:-.01em}' +
+			'.dsh-skm-sub{margin-top:2px;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:12px;line-height:18px;overflow-wrap:anywhere}' +
+			'.dsh-skm-headActions{display:flex;align-items:center;gap:8px;flex:none}' +
+			'.dsh-skm-new{border-radius:16px;height:32px;padding:0 12px;font-size:13px;line-height:20px}' +
+			'.dsh-skm-toolbar{display:flex;align-items:center;gap:10px;margin:18px 0 8px;flex-wrap:wrap}' +
+			'.dsh-skm-scope{position:relative;flex:none}' +
+			'.dsh-skm-scopeButton{box-sizing:border-box;display:inline-flex;align-items:center;gap:7px;height:34px;max-width:240px;padding:0 10px;border:.5px solid var(--dsw-alias-border-l3,#d9d9d9);border-radius:10px;background:transparent;color:var(--dsw-alias-label-primary,#1f1f1f);font:inherit;font-size:13px;line-height:20px;cursor:pointer}' +
+			'.dsh-skm-scopeButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}' +
+			'.dsh-skm-scopeButton:disabled{opacity:.5;cursor:not-allowed}' +
+			'.dsh-skm-scopeIcon{display:inline-flex;flex:none;color:var(--dsw-alias-label-tertiary,#8a8a8a)}' +
+			'.dsh-skm-scopeName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+			'.dsh-skm-chevron{display:inline-flex;flex:none;color:var(--dsw-alias-label-tertiary,#8a8a8a)}' +
+			'.dsh-skm-popover{position:absolute;z-index:30;top:calc(100% + 6px);left:0;min-width:270px;max-width:360px;padding:6px;border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1,#fff));box-shadow:0 12px 32px rgba(0,0,0,.16),inset 0 0 0 .5px var(--dsw-alias-border-l2,rgba(0,0,0,.1));max-height:60vh;overflow:auto}' +
+			'.dsh-skm-popoverRight{left:auto;right:0;min-width:190px}' +
+			'.dsh-skm-menuLabel{padding:6px 8px 4px;color:var(--dsw-alias-label-caption,#a0a0a0);font-size:11px;line-height:16px;font-weight:600}' +
+			'.dsh-skm-menuRow{display:flex;align-items:center;gap:9px;width:100%;padding:7px 8px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary,#1f1f1f);font:inherit;font-size:13px;line-height:20px;text-align:left;cursor:pointer}' +
+			'.dsh-skm-menuRow:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}' +
+			'.dsh-skm-menuRow:disabled{opacity:.5;cursor:not-allowed}' +
+			'.dsh-skm-menuRow[data-danger=true]{color:var(--dsw-alias-state-error-primary,#d33)}' +
+			'.dsh-skm-menuRowMain{flex:1;min-width:0;display:flex;flex-direction:column}' +
+			'.dsh-skm-menuRowName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+			'.dsh-skm-menuRowPath{color:var(--dsw-alias-label-caption,#a0a0a0);font-size:11px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+			'.dsh-skm-menuTick{display:inline-flex;flex:none;color:var(--dsw-alias-state-business-primary,#4c9bff)}' +
+			'.dsh-skm-sep{height:.5px;margin:5px 4px;background:var(--dsw-alias-border-l1,rgba(0,0,0,.08))}' +
+			'.dsh-skm-count{flex:none;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:13px;padding-left:2px}' +
+			'.dsh-skm-search{flex:1;min-width:170px;display:flex;align-items:center;gap:7px;height:34px;box-sizing:border-box;padding:0 10px;border:.5px solid var(--dsw-alias-border-l3,#d9d9d9);border-radius:10px;color:var(--dsw-alias-label-tertiary,#8a8a8a);transition:border-color .15s}' +
+			'.dsh-skm-search:focus-within{border-color:var(--dsw-alias-state-business-primary,#4c9bff)}' +
+			'.dsh-skm-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--dsw-alias-label-primary,#1f1f1f);font:inherit;font-size:13px;line-height:20px}' +
+			'.dsh-skm-search input::placeholder{color:var(--dsw-alias-label-caption,#a0a0a0)}' +
+			'.dsh-skm-searchClear{display:inline-flex;border:0;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8a8a);cursor:pointer;padding:0;flex:none}' +
+			'.dsh-skm-iconButton{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;flex:none;border:.5px solid var(--dsw-alias-border-l3,#d9d9d9);border-radius:10px;background:transparent;color:var(--dsw-alias-label-secondary,#5c5c5c);cursor:pointer;padding:0}' +
+			'.dsh-skm-iconButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary,#1f1f1f)}' +
+			'.dsh-skm-iconButton:disabled{opacity:.45;cursor:not-allowed}' +
+			'.dsh-skm-groupHead{display:flex;align-items:center;gap:8px;margin:22px 0 8px}' +
+			'.dsh-skm-groupTitle{font-size:13px;font-weight:600;color:var(--dsw-alias-label-secondary,#5c5c5c)}' +
+			'.dsh-skm-groupCount{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-weight:400;font-size:12px}' +
+			'.dsh-skm-groupRule{flex:1;height:.5px;background:var(--dsw-alias-border-l1,rgba(0,0,0,.08))}' +
+			'.dsh-skm-list{display:flex;flex-direction:column;gap:2px}' +
+			'.dsh-skm-row{display:flex;align-items:center;gap:12px;padding:10px;border-radius:12px}' +
+			'.dsh-skm-row:hover{background:var(--dsw-alias-interactive-bg-hover)}' +
+			'.dsh-skm-rowGlyph{flex:none;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-layer-2,var(--dsw-specific-sidebar-fill,#f5f6f8));color:var(--dsw-alias-label-secondary,#5c5c5c)}' +
+			'.dsh-skm-row[data-state=off] .dsh-skm-rowGlyph{color:var(--dsw-alias-label-caption,#a0a0a0)}' +
+			'.dsh-skm-row[data-state=broken] .dsh-skm-rowGlyph{color:var(--dsw-alias-state-warn-primary,#c80)}' +
+			'.dsh-skm-rowMain{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}' +
+			'.dsh-skm-rowName{display:flex;align-items:center;gap:6px;font-size:14px;line-height:21px;font-weight:500;overflow:hidden}' +
+			'.dsh-skm-rowNameText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+			'.dsh-skm-row[data-state=off] .dsh-skm-rowNameText{color:var(--dsw-alias-label-tertiary,#8a8a8a)}' +
+			'.dsh-skm-badge{flex:none;display:inline-flex;align-items:center;gap:3px;height:18px;padding:0 6px;border-radius:6px;font-size:11px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-tertiary,#8a8a8a);background:var(--dsw-alias-bg-layer-2,var(--dsw-specific-sidebar-fill,#f5f6f8))}' +
+			'.dsh-skm-badge[data-tone=warn]{color:var(--dsw-alias-state-warn-primary,#c80)}' +
+			'.dsh-skm-rowDesc{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:12px;line-height:18px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}' +
+			'.dsh-skm-rowPath{color:var(--dsw-alias-label-caption,#a0a0a0);font-size:11px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}' +
+			'.dsh-skm-rowSide{flex:none;display:flex;align-items:center;gap:2px}' +
+			'.dsh-skm-rowAction{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8a8a);cursor:pointer;padding:0}' +
+			'.dsh-skm-rowAction:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary,#1f1f1f)}' +
+			'.dsh-skm-rowAction[data-danger=true]:hover:not(:disabled){color:var(--dsw-alias-state-error-primary,#d33)}' +
+			'.dsh-skm-rowAction:disabled{opacity:.4;cursor:not-allowed}' +
+			'.dsh-skm-empty{margin-top:26px;border:.5px dashed var(--dsw-alias-border-l2,rgba(0,0,0,.14));border-radius:14px;padding:44px 24px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:6px}' +
+			'.dsh-skm-emptyGlyph{color:var(--dsw-alias-label-caption,#a0a0a0);margin-bottom:4px}' +
+			'.dsh-skm-emptyTitle{font-size:14px;font-weight:500}' +
+			'.dsh-skm-emptyBody{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:12px;line-height:18px;max-width:46ch}' +
+			'.dsh-skm-emptyActions{display:flex;gap:8px;margin-top:12px}' +
+			'.dsh-skm-notice{display:flex;align-items:flex-start;gap:8px;margin:12px 0 0;padding:10px 12px;border-radius:10px;font-size:12px;line-height:18px;background:var(--dsw-specific-sidebar-fill,#f5f6f8);color:var(--dsw-alias-label-secondary,#5c5c5c)}' +
+			'.dsh-skm-notice[data-tone=error]{color:var(--dsw-alias-state-error-primary,#d33)}' +
+			'.dsh-skm-notice[data-tone=warn]{color:var(--dsw-alias-state-warn-primary,#c80)}' +
+			'.dsh-skm-noticeMain{flex:1;min-width:0;overflow-wrap:anywhere}' +
+			'.dsh-skm-loading{display:flex;align-items:center;gap:8px;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:13px;padding:28px 0}' +
+			'.dsh-skm-spin{display:inline-flex;animation:dsh-skm-spin 1s linear infinite}' +
+			'@keyframes dsh-skm-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}' +
+			'@media (prefers-reduced-motion:reduce){.dsh-skm-spin{animation:none}}' +
+			'.dsh-skm-overlay{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.28)}' +
+			'.dsh-skm-dialog{width:100%;max-width:420px;border-radius:16px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-1,#fff));box-shadow:0 20px 60px rgba(0,0,0,.28),inset 0 0 0 .5px var(--dsw-alias-border-l2,rgba(0,0,0,.1));padding:18px}' +
+			'.dsh-skm-dialogTitle{font-size:15px;font-weight:600;line-height:22px;margin:0 0 6px}' +
+			'.dsh-skm-dialogBody{color:var(--dsw-alias-label-secondary,#5c5c5c);font-size:13px;line-height:20px;margin:0 0 10px;overflow-wrap:anywhere}' +
+			'.dsh-skm-field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}' +
+			'.dsh-skm-fieldLabel{font-size:12px;color:var(--dsw-alias-label-secondary,#5c5c5c);font-weight:500}' +
+			'.dsh-skm-fieldHint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-caption,#a0a0a0)}' +
+			'.dsh-skm-input,.dsh-skm-textarea{box-sizing:border-box;width:100%;border:.5px solid var(--dsw-alias-border-l3,#d9d9d9);border-radius:10px;background:transparent;color:var(--dsw-alias-label-primary,#1f1f1f);font:inherit;font-size:13px;line-height:20px;padding:8px 10px;outline:none}' +
+			'.dsh-skm-input:focus,.dsh-skm-textarea:focus{border-color:var(--dsw-alias-state-business-primary,#4c9bff)}' +
+			'.dsh-skm-textarea{resize:vertical;min-height:56px}' +
+			'.dsh-skm-radioRow{display:flex;gap:8px}' +
+			'.dsh-skm-radio{flex:1;display:flex;flex-direction:column;gap:1px;padding:8px 10px;border:.5px solid var(--dsw-alias-border-l3,#d9d9d9);border-radius:10px;cursor:pointer;background:transparent;font:inherit;text-align:left;color:var(--dsw-alias-label-primary,#1f1f1f)}' +
+			'.dsh-skm-radio[data-active=true]{border-color:var(--dsw-alias-state-business-primary,#4c9bff);background:var(--dsw-alias-interactive-bg-hover)}' +
+			'.dsh-skm-radio:disabled{opacity:.5;cursor:not-allowed}' +
+			'.dsh-skm-radioName{font-size:13px;line-height:20px}' +
+			'.dsh-skm-radioHint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-caption,#a0a0a0)}' +
+			'.dsh-skm-dialogActions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}' +
+			'.dsh-skm-dialogWide{max-width:600px}' +
+			'.dsh-skm-extList{margin:10px 0 0;border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));border-radius:12px;max-height:min(46vh,420px);overflow:auto;padding:8px}' +
+			'.dsh-skm-extHead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:2px 6px 8px}' +
+			'.dsh-skm-extGroup{padding:6px 4px 2px}' +
+			'.dsh-skm-extGroupHead{display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:8px}' +
+			'.dsh-skm-extGroupHead:hover{background:var(--dsw-alias-interactive-bg-hover)}' +
+			'.dsh-skm-extSourceName{font-size:13px;line-height:20px;font-weight:500}' +
+			'.dsh-skm-extSourcePath{color:var(--dsw-alias-label-caption,#a0a0a0);font-size:11px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}' +
+			'.dsh-skm-extCount{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:11px;flex:none}' +
+			'.dsh-skm-extRows{display:flex;flex-direction:column;margin:2px 0 4px 22px}' +
+			'.dsh-skm-extRow{display:flex;align-items:flex-start;gap:8px;padding:5px 6px;border-radius:8px;cursor:pointer}' +
+			'.dsh-skm-extRow:hover{background:var(--dsw-alias-interactive-bg-hover)}' +
+			'.dsh-skm-extRowMain{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}' +
+			'.dsh-skm-extRowName{display:flex;align-items:center;gap:6px;font-size:13px;line-height:19px;overflow:hidden}' +
+			'.dsh-skm-extRowDesc{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:11px;line-height:16px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}' +
+			'.dsh-skm-check{flex:none;width:16px;height:16px;margin-top:1px;border:.5px solid var(--dsw-alias-border-l3,#d9d9d9);border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:transparent;background:transparent}' +
+			'.dsh-skm-check[data-on=true]{background:var(--dsw-alias-state-business-primary,#4c9bff);border-color:transparent;color:#fff}' +
+			'.dsh-skm-extFooter{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}' +
+			'.dsh-skm-extFooterHint{flex:1;min-width:120px;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:11px;line-height:16px;overflow-wrap:anywhere}' +
+			'.dsh-skm-extLink{color:var(--dsw-alias-link,var(--dsw-alias-state-business-primary,#4c9bff));background:none;border:0;padding:0;font:inherit;font-size:12px;cursor:pointer}' +
+			'.dsh-skm-busy{display:flex;align-items:center;gap:8px;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:12px;padding:24px 0;justify-content:center}';
+
+		/** Insert this package's stylesheet; the returned disposer removes it. */
+		function insertStyles() {
+			const tag = document.createElement('style');
+			tag.dataset.plugin = PLUGIN_ID;
+			tag.dataset.pluginCss = PLUGIN_ID + '/skill-manager.css';
+			tag.textContent = CSS;
+			document.head.appendChild(tag);
+			return () => {
+				tag.remove();
+			};
+		}
+
+		/* ── host calls ─────────────────────────────────────────────────────── */
+
+		/** A failed call, in the shape the page renders. */
+		function failure(message) {
+			return { ok: false, error: { message } };
+		}
+
+		/**
+		 * One JSON call to the host half.
+		 *
+		 * The envelope is returned rather than thrown, so a refusal is rendered
+		 * next to the thing that caused it instead of taking the page down.
+		 * @param method - API method name.
+		 * @param payload - request body.
+		 * @returns the `{ok, value}` envelope, or a synthesized failure.
+		 */
+		async function call(method, payload) {
+			let response;
+			try {
+				response = await fetch(`${API}/${method}`, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify(payload === void 0 ? {} : payload)
+				});
+			} catch (error) {
+				return failure(error && error.message ? error.message : String(error));
+			}
+			let parsed = null;
+			try {
+				parsed = await response.json();
+			} catch (error) {
+				return failure(`HTTP ${response.status}`);
+			}
+			if (parsed !== null && typeof parsed === 'object' && typeof parsed.ok === 'boolean') return parsed;
+			return failure(`HTTP ${response.status}`);
+		}
+
+		/** The message out of a failed envelope. */
+		function errorText(result) {
+			if (result && result.ok === false && result.error) return String(result.error.message || result.error);
+			return L.unavailable;
+		}
+
+		/**
+		 * Dismiss a popover on an outside pointer press or Escape.
+		 * @param ref - the popover root element's ref.
+		 * @param open - whether the popover is open.
+		 * @param close - called when a dismissal gesture arrives.
+		 */
+		function useDismiss(ref, open, close) {
+			React.useEffect(() => {
+				if (!open) return void 0;
+				const onPointerDown = (event) => {
+					if (ref.current !== null && ref.current !== void 0 && !ref.current.contains(event.target)) close();
+				};
+				const onKeyDown = (event) => {
+					if (event.key === 'Escape') {
+						event.stopPropagation();
+						close();
+					}
+				};
+				document.addEventListener('pointerdown', onPointerDown, true);
+				document.addEventListener('keydown', onKeyDown, true);
+				return () => {
+					document.removeEventListener('pointerdown', onPointerDown, true);
+					document.removeEventListener('keydown', onKeyDown, true);
+				};
+			}, [ref, open, close]);
+		}
+
+		/* ── components ─────────────────────────────────────────────────────── */
+
+		/** A trailing-message strip. */
+		function Notice(props) {
+			const tone = props.tone === void 0 ? 'info' : props.tone;
+			return h(
+				'div',
+				{ className: 'dsh-skm-notice', 'data-tone': tone, role: tone === 'error' ? 'alert' : void 0 },
+				h('span', { style: { display: 'inline-flex', flex: 'none', marginTop: '2px' } }, tone === 'info' ? h(IconInfo, { size: 14 }) : h(IconWarning, { size: 14 })),
+				h('div', { className: 'dsh-skm-noticeMain' }, props.children),
+				props.onDismiss === void 0 ? null : h('button', { type: 'button', className: 'dsh-skm-rowAction', onClick: props.onDismiss, 'aria-label': L.close }, h(IconClose, { size: 14 }))
+			);
+		}
+
+		/** One row's "..." menu, with copy-path and reveal. */
+		function RowMenu(props) {
+			const { row, busy, onCopy, onReveal } = props;
+			const [open, setOpen] = React.useState(false);
+			const ref = React.useRef(null);
+			const close = React.useCallback(() => setOpen(false), []);
+			useDismiss(ref, open, close);
+			return h(
+				'div',
+				{ className: 'dsh-skm-scope', ref },
+				h(
+					'button',
+					{
+						type: 'button',
+						className: 'dsh-skm-rowAction',
+						'aria-label': row.name,
+						'aria-haspopup': 'menu',
+						'aria-expanded': open,
+						disabled: busy,
+						onClick: () => setOpen((value) => !value)
+					},
+					h(IconEllipsis, { size: 15 })
+				),
+				open
+					? h(
+							'div',
+							{ className: 'dsh-skm-popover dsh-skm-popoverRight', role: 'menu' },
+							h(
+								'button',
+								{
+									type: 'button',
+									role: 'menuitem',
+									className: 'dsh-skm-menuRow',
+									onClick: () => {
+										close();
+										onCopy(row);
+									}
+								},
+								h('span', { className: 'dsh-skm-scopeIcon' }, h(IconFolder, { size: 14 })),
+								h('span', { className: 'dsh-skm-menuRowMain' }, h('span', { className: 'dsh-skm-menuRowName' }, L.copyPath))
+							),
+							h(
+								'button',
+								{
+									type: 'button',
+									role: 'menuitem',
+									className: 'dsh-skm-menuRow',
+									onClick: () => {
+										close();
+										onReveal(row);
+									}
+								},
+								h('span', { className: 'dsh-skm-scopeIcon' }, h(IconBrowse, { size: 14 })),
+								h('span', { className: 'dsh-skm-menuRowMain' }, h('span', { className: 'dsh-skm-menuRowName' }, L.reveal))
+							)
+						)
+					: null
+			);
+		}
+
+		/** One skill row. */
+		function SkillRow(props) {
+			const { row, busy, onToggle, onDelete, onCopy, onReveal } = props;
+			const state = row.problem !== void 0 ? 'broken' : row.enabled ? 'on' : 'off';
+			const badges = [];
+			if (row.problem !== void 0) {
+				badges.push(h('span', { className: 'dsh-skm-badge', 'data-tone': 'warn', key: 'broken', title: row.problem }, h(IconWarning, { size: 11 }), L.broken));
+			} else if (row.linkTarget !== void 0 && row.linkTarget !== null) {
+				/* A linked skill is worth naming: its files live outside the skill
+				 * root, which is why switching it off moves the link instead of
+				 * renaming a file through it. */
+				badges.push(h('span', { className: 'dsh-skm-badge', key: 'link', title: `${L.linkedHint}\n${row.linkTarget}` }, L.linked));
+			} else if (row.shadowed === true) {
+				/* A same-named skill in a higher-precedence root wins, so this copy is
+				 * on disk but invisible to the model. Only the host can decide that:
+				 * it is a fact about the roots, not about this row alone. */
+				badges.push(h('span', { className: 'dsh-skm-badge', 'data-tone': 'warn', key: 'shadow', title: L.shadowedHint }, L.shadowed));
+			}
+			const summary = row.description !== void 0 && row.description.length > 0 ? row.description : row.heading;
+			return h(
+				'div',
+				{ className: 'dsh-skm-row', 'data-state': state, 'data-skill': row.name },
+				h('span', { className: 'dsh-skm-rowGlyph' }, h(IconSkill, { size: 18 })),
+				h(
+					'div',
+					{ className: 'dsh-skm-rowMain' },
+					h('div', { className: 'dsh-skm-rowName' }, h('span', { className: 'dsh-skm-rowNameText', title: row.name }, row.name), badges),
+					summary !== void 0 && summary.length > 0 ? h('div', { className: 'dsh-skm-rowDesc', title: summary }, summary) : row.problem !== void 0 ? h('div', { className: 'dsh-skm-rowDesc' }, row.problem) : null,
+					h('div', { className: 'dsh-skm-rowPath', title: row.file }, row.file)
+				),
+				h(
+					'div',
+					{ className: 'dsh-skm-rowSide' },
+					h(RowMenu, { row, busy, onCopy, onReveal }),
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'dsh-skm-rowAction',
+							'data-danger': 'true',
+							'aria-label': `${L.deleteTitle}: ${row.name}`,
+							disabled: busy,
+							onClick: () => onDelete(row)
+						},
+						h(IconTrash, { size: 15 })
+					),
+					h(SwitchControl, { checked: row.enabled, disabled: busy, label: row.name, onChange: (next) => onToggle(row, next) })
+				)
+			);
+		}
+
+		/** The visible label of one workspace. */
+		function workspaceLabel(workspace) {
+			if (workspace.title !== void 0 && workspace.title !== null && String(workspace.title).length > 0) return String(workspace.title);
+			const segments = String(workspace.path).split('/').filter((segment) => segment.length > 0);
+			return segments.length === 0 ? String(workspace.path) : segments[segments.length - 1];
+		}
+
+		/**
+		 * The scope switcher: user-wide, or one workspace.
+		 *
+		 * The workspace list comes from the shell's own `useWorkspaces` seat, so it
+		 * is the same set of directories the sidebar shows, and the host half
+		 * accepts a path only when it is registered.
+		 */
+		function ScopePicker(props) {
+			const { scope, workspaces, currentPath, disabled, onSelect } = props;
+			const [open, setOpen] = React.useState(false);
+			const ref = React.useRef(null);
+			const close = React.useCallback(() => setOpen(false), []);
+			useDismiss(ref, open, close);
+			const selected = scope === 'global' ? null : workspaces.find((workspace) => workspace.path === scope);
+			const label = scope === 'global' ? L.scopeUser : selected === void 0 ? scope : workspaceLabel(selected);
+			const rows = [];
+			rows.push(
+				h(
+					'button',
+					{
+						type: 'button',
+						role: 'option',
+						key: 'global',
+						className: 'dsh-skm-menuRow',
+						'aria-selected': scope === 'global',
+						onClick: () => {
+							close();
+							onSelect('global');
+						}
+					},
+					h('span', { className: 'dsh-skm-scopeIcon' }, h(IconGlobe, { size: 14 })),
+					h('span', { className: 'dsh-skm-menuRowMain' }, h('span', { className: 'dsh-skm-menuRowName' }, L.scopeUser), h('span', { className: 'dsh-skm-menuRowPath' }, L.scopeHelpGlobal)),
+					scope === 'global' ? h('span', { className: 'dsh-skm-menuTick' }, h(IconCheck, { size: 14 })) : null
+				)
+			);
+			rows.push(h('div', { className: 'dsh-skm-menuLabel', key: 'label' }, L.workspaceSection));
+			if (workspaces.length === 0) rows.push(h('div', { className: 'dsh-skm-menuRowPath', key: 'none', style: { padding: '4px 8px 6px' } }, L.noSession));
+			for (const workspace of workspaces) {
+				rows.push(
+					h(
+						'button',
+						{
+							type: 'button',
+							role: 'option',
+							key: workspace.path,
+							className: 'dsh-skm-menuRow',
+							'aria-selected': workspace.path === scope,
+							onClick: () => {
+								close();
+								onSelect(workspace.path);
+							}
+						},
+						h('span', { className: 'dsh-skm-scopeIcon' }, h(IconFolder, { size: 14 })),
+						h('span', { className: 'dsh-skm-menuRowMain' }, h('span', { className: 'dsh-skm-menuRowName' }, workspaceLabel(workspace)), h('span', { className: 'dsh-skm-menuRowPath' }, workspace.path)),
+						workspace.path === scope ? h('span', { className: 'dsh-skm-menuTick' }, h(IconCheck, { size: 14 })) : null
+					)
+				);
+			}
+			/* A session can sit in a directory that is not a registered workspace;
+			 * that directory is still a legitimate project root, so offer it. */
+			if (currentPath !== null && currentPath !== void 0 && currentPath !== scope && !workspaces.some((workspace) => workspace.path === currentPath)) {
+				rows.push(h('div', { className: 'dsh-skm-sep', key: 'sep' }));
+				rows.push(
+					h(
+						'button',
+						{
+							type: 'button',
+							role: 'option',
+							key: 'current',
+							className: 'dsh-skm-menuRow',
+							'aria-selected': false,
+							onClick: () => {
+								close();
+								onSelect(currentPath);
+							}
+						},
+						h('span', { className: 'dsh-skm-scopeIcon' }, h(IconSkill, { size: 14 })),
+						h('span', { className: 'dsh-skm-menuRowMain' }, h('span', { className: 'dsh-skm-menuRowName' }, L.scopeHelpProject), h('span', { className: 'dsh-skm-menuRowPath' }, currentPath)),
+						null
+					)
+				);
+			}
+			return h(
+				'div',
+				{ className: 'dsh-skm-scope', ref },
+				h(
+					'button',
+					{
+						type: 'button',
+						className: 'dsh-skm-scopeButton',
+						'aria-haspopup': 'listbox',
+						'aria-expanded': open,
+						'aria-label': L.scopeLabel,
+						disabled,
+						onClick: () => setOpen((value) => !value)
+					},
+					h('span', { className: 'dsh-skm-scopeIcon' }, scope === 'global' ? h(IconGlobe, { size: 14 }) : h(IconFolder, { size: 14 })),
+					h('span', { className: 'dsh-skm-scopeName', title: scope === 'global' ? void 0 : scope }, label),
+					h('span', { className: 'dsh-skm-chevron' }, h(IconChevronDown, { size: 13 }))
+				),
+				open ? h('div', { className: 'dsh-skm-popover', role: 'listbox', 'aria-label': L.scopeLabel }, rows) : null
+			);
+		}
+
+		/** One modal dialog. */
+		function Dialog(props) {
+			const onClose = props.onClose;
+			React.useEffect(() => {
+				const onKeyDown = (event) => {
+					if (event.key === 'Escape') {
+						event.stopPropagation();
+						onClose();
+					}
+				};
+				document.addEventListener('keydown', onKeyDown, true);
+				return () => document.removeEventListener('keydown', onKeyDown, true);
+			}, [onClose]);
+			return h(
+				'div',
+				{
+					className: 'dsh-skm-overlay',
+					role: 'presentation',
+					onMouseDown: (event) => {
+						if (event.target === event.currentTarget) onClose();
+					}
+				},
+				h(
+					'div',
+					{
+						className: props.wide === true ? 'dsh-skm-dialog dsh-skm-dialogWide' : 'dsh-skm-dialog',
+						role: 'dialog',
+						'aria-modal': 'true',
+						'aria-label': props.title
+					},
+					h('h2', { className: 'dsh-skm-dialogTitle' }, props.title),
+					props.children,
+					h('div', { className: 'dsh-skm-dialogActions' }, props.actions)
+				)
+			);
+		}
+
+		/** A tri-state checkbox drawn from spans, so it needs no design-system part. */
+		function Check(props) {
+			return h('span', { className: 'dsh-skm-check', 'data-on': props.on === true, 'aria-hidden': 'true' }, props.on === true ? h(IconCheck, { size: 11 }) : null);
+		}
+
+		/**
+		 * The “import external agent skills” dialog.
+		 *
+		 * Mirrors the shape this flow has in the tools it reads from: one row per
+		 * source tool showing where it lives and how many skills it holds, an
+		 * expandable selection under it, a mode choice (copy or link) and the
+		 * destination scope. Selection state is per skill path; a group's box is
+		 * checked only when every one of its skills is.
+		 */
+		function ExternalImportDialog(props) {
+			const { sources, phase, error, scope, onClose, onImport, onRescan, busy } = props;
+			const [selected, setSelected] = React.useState(() => new Set());
+			const [mode, setMode] = React.useState('link');
+			const [target, setTarget] = React.useState(scope === 'global' ? 'global' : 'project');
+			const [collapsed, setCollapsed] = React.useState(() => new Set());
+
+			const all = [];
+			for (const source of sources) for (const skill of source.skills) all.push(skill.path);
+			const togglePath = (path_) =>
+				setSelected((current) => {
+					const next = new Set(current);
+					if (next.has(path_)) next.delete(path_);
+					else next.add(path_);
+					return next;
+				});
+			const toggleGroup = (source) => {
+				const paths = source.skills.map((skill) => skill.path);
+				const every = paths.every((path_) => selected.has(path_));
+				setSelected((current) => {
+					const next = new Set(current);
+					for (const path_ of paths) {
+						if (every) next.delete(path_);
+						else next.add(path_);
+					}
+					return next;
+				});
+			};
+			const toggleCollapse = (id) =>
+				setCollapsed((current) => {
+					const next = new Set(current);
+					if (next.has(id)) next.delete(id);
+					else next.add(id);
+					return next;
+				});
+
+			const chosen = all.filter((path_) => selected.has(path_));
+			const canImport = chosen.length > 0 && busy !== true;
+
+			const body = [];
+			body.push(
+				h(
+					'div',
+					{ className: 'dsh-skm-extHead', key: 'head' },
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'dsh-skm-extRow',
+							style: { padding: '2px 4px', gap: '8px' },
+							onClick: () => setSelected((current) => (current.size === all.length ? new Set() : new Set(all)))
+						},
+						h(Check, { on: all.length > 0 && chosen.length === all.length }),
+						h('span', { style: { fontSize: '13px' } }, chosen.length === all.length && all.length > 0 ? L.externalClearAll : L.externalSelectAll)
+					),
+					h('span', { className: 'dsh-skm-extCount' }, format(L.externalSelected, { count: chosen.length, total: all.length }))
+				)
+			);
+			for (const source of sources) {
+				const paths = source.skills.map((skill) => skill.path);
+				const chosenHere = paths.filter((path_) => selected.has(path_)).length;
+				const isCollapsed = collapsed.has(source.path);
+				body.push(
+					h(
+						'div',
+						{ className: 'dsh-skm-extGroup', key: source.path },
+						h(
+							'div',
+							{ className: 'dsh-skm-extGroupHead' },
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'dsh-skm-rowAction',
+									style: { width: '20px', height: '20px' },
+									'aria-label': source.label,
+									'aria-expanded': !isCollapsed,
+									onClick: () => toggleCollapse(source.path)
+								},
+								h('span', { className: 'dsh-skm-chevron' }, h(IconChevronRight, { size: 12 }))
+							),
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'dsh-skm-extRow',
+									style: { flex: '1', minWidth: '0', padding: '2px 4px' },
+									onClick: () => toggleGroup(source)
+								},
+								h(Check, { on: paths.length > 0 && chosenHere === paths.length }),
+								h('span', { className: 'dsh-skm-extSourceName' }, source.label),
+								h('span', { className: 'dsh-skm-extSourcePath', title: source.path }, source.display)
+							),
+							h('span', { className: 'dsh-skm-extCount' }, format(L.externalSkills, { count: source.skills.length }))
+						),
+						isCollapsed
+							? null
+							: h(
+									'div',
+									{ className: 'dsh-skm-extRows' },
+									source.skills.map((skill) =>
+										h(
+											'label',
+											{ className: 'dsh-skm-extRow', key: skill.path },
+											h('input', {
+												type: 'checkbox',
+												checked: selected.has(skill.path),
+												onChange: () => togglePath(skill.path),
+												style: { position: 'absolute', opacity: '0', width: '1px', height: '1px' }
+											}),
+											h(Check, { on: selected.has(skill.path) }),
+											h(
+												'span',
+												{ className: 'dsh-skm-extRowMain' },
+												h(
+													'span',
+													{ className: 'dsh-skm-extRowName' },
+													h('span', { className: 'dsh-skm-rowNameText', title: skill.name }, skill.name),
+													skill.nested ? h('span', { className: 'dsh-skm-badge', title: L.externalNestedHint }, L.externalNested) : null
+												),
+												skill.description ? h('span', { className: 'dsh-skm-extRowDesc' }, skill.description) : null
+											)
+										)
+									)
+								)
+					)
+				);
+			}
+
+			const footer = h(
+				'div',
+				{ className: 'dsh-skm-extFooter' },
+				h('span', { className: 'dsh-skm-extFooterHint' }, mode === 'link' ? L.externalModeLinkHint : L.externalModeCopyHint)
+			);
+
+			const modePicker = h(
+				'div',
+				{ className: 'dsh-skm-field' },
+				h('span', { className: 'dsh-skm-fieldLabel' }, L.externalMode),
+				h(
+					'div',
+					{ className: 'dsh-skm-radioRow' },
+					h(
+						'button',
+						{ type: 'button', className: 'dsh-skm-radio', 'data-active': mode === 'link', onClick: () => setMode('link') },
+						h('span', { className: 'dsh-skm-radioName' }, L.externalModeLink),
+						h('span', { className: 'dsh-skm-radioHint' }, L.externalModeLinkHint)
+					),
+					h(
+						'button',
+						{ type: 'button', className: 'dsh-skm-radio', 'data-active': mode === 'copy', onClick: () => setMode('copy') },
+						h('span', { className: 'dsh-skm-radioName' }, L.externalModeCopy),
+						h('span', { className: 'dsh-skm-radioHint' }, L.externalModeCopyHint)
+					)
+				)
+			);
+
+			const targetPicker = h(
+				'div',
+				{ className: 'dsh-skm-field' },
+				h('span', { className: 'dsh-skm-fieldLabel' }, L.externalTarget),
+				h(
+					'div',
+					{ className: 'dsh-skm-radioRow' },
+					h(
+						'button',
+						{ type: 'button', className: 'dsh-skm-radio', 'data-active': target === 'global', onClick: () => setTarget('global') },
+						h('span', { className: 'dsh-skm-radioName' }, L.externalTargetGlobal),
+						h('span', { className: 'dsh-skm-radioHint' }, L.scopeHelpGlobal)
+					),
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'dsh-skm-radio',
+							'data-active': target === 'project',
+							disabled: scope === 'global',
+							onClick: () => setTarget('project')
+						},
+						h('span', { className: 'dsh-skm-radioName' }, L.externalTargetProject),
+						h('span', { className: 'dsh-skm-radioHint' }, scope === 'global' ? L.noSession : L.scopeHelpProject)
+					)
+				)
+			);
+
+			const actions = [
+				h(Button, { key: 'cancel', variant: 'outline', size: 'sm', onClick: onClose }, L.externalCancel),
+				h(
+					Button,
+					{
+						key: 'go',
+						variant: 'primary',
+						size: 'sm',
+						disabled: !canImport,
+						onClick: () => onImport({ picks: chosen, mode, scope: target })
+					},
+					L.externalImport
+				)
+			];
+
+			return h(
+				Dialog,
+				{ title: L.externalTitle, onClose, actions, wide: true },
+				phase === 'loading'
+					? h('div', { className: 'dsh-skm-busy' }, h('span', { className: 'dsh-skm-spin' }, h(IconLoading, { size: 15 })), L.externalScanning)
+					: error !== null
+						? h('p', { className: 'dsh-skm-dialogBody' }, error)
+						: sources.length === 0
+							? h(
+									'div',
+									null,
+									h('p', { className: 'dsh-skm-dialogBody' }, L.externalNone),
+									h('p', { className: 'dsh-skm-fieldHint' }, L.externalNoneBody),
+									h('div', { style: { marginTop: '10px' } }, h(Button, { variant: 'outline', size: 'sm', icon: h(IconRefresh, { size: 13 }), onClick: onRescan }, L.externalRescan))
+								)
+							: h(
+									React.Fragment,
+									null,
+									h('p', { className: 'dsh-skm-dialogBody', style: { marginBottom: '0' } }, L.externalIntro),
+									h('div', { className: 'dsh-skm-extList' }, body),
+									modePicker,
+									targetPicker,
+									footer
+								)
+			);
+		}
+
+		/* ── the page ───────────────────────────────────────────────────────── */
+
+		/**
+		 * The Skill Manager page.
+		 * @param props - slot props: framework seats plus this plugin's injected callbacks.
+		 * @returns the page element.
+		 */
+		function SkillManagerPage(props) {
+			const { useWorkspaces, useSessions, pickDirectory, openPath, detectLanguage } = props;
+			if (typeof detectLanguage === 'function') zhActive = detectLanguage();
+
+			const [phase, setPhase] = React.useState('loading');
+			const [error, setError] = React.useState(null);
+			const [notice, setNotice] = React.useState(null);
+			const [data, setData] = React.useState(null);
+			const [scope, setScope] = React.useState('global');
+			const [query, setQuery] = React.useState('');
+			const [busy, setBusy] = React.useState(null);
+			const [pendingDelete, setPendingDelete] = React.useState(null);
+			const [draft, setDraft] = React.useState(null);
+			/** The external-import dialog: null when closed. */
+			const [external, setExternal] = React.useState(null);
+			/** Whether the toolbar's import menu is open. */
+			const [importMenu, setImportMenu] = React.useState(false);
+
+			/** Registered workspaces, straight from the shell's own store. */
+			const workspaces = (typeof useWorkspaces === 'function' && useWorkspaces((state) => state.items)) || [];
+			/**
+			 * The workspace of the session shown in the main view.
+			 *
+			 * There is no "active workspace" API; the shipped idiom is to read the
+			 * session the shell retains for the main view and match its cwd against
+			 * the registered workspace directories.
+			 */
+			const currentPath =
+				typeof useSessions === 'function'
+					? useSessions((state) => {
+							const byId = (state && state.byId) || {};
+							const current = Object.values(byId).find((session) => (((session && session.retainedBy) || {}).mainView || 0) > 0);
+							if (current === void 0 || typeof current.cwd !== 'string' || current.cwd.length === 0) return null;
+							const owner = workspaces.find((workspace) => current.cwd === workspace.path || current.cwd.startsWith(`${workspace.path}/`));
+							return owner === void 0 ? current.cwd : owner.path;
+						})
+					: null;
+
+			/** Load the catalog for one scope. */
+			const load = React.useCallback(async (nextScope) => {
+				setPhase((current) => (current === 'ready' ? 'ready' : 'loading'));
+				setError(null);
+				const result = await call('list', nextScope === 'global' ? {} : { workspacePath: nextScope });
+				if (result.ok !== true) {
+					setError(errorText(result));
+					setPhase('error');
+					return;
+				}
+				setData(result.value);
+				setPhase('ready');
+			}, []);
+
+			React.useEffect(() => {
+				load(scope);
+			}, [load, scope]);
+
+			/* Follow the session: the page's job is to show the skills of the
+			 * workspace the user is actually working in. */
+			const followed = React.useRef(null);
+			React.useEffect(() => {
+				if (currentPath === null || currentPath === void 0 || currentPath === followed.current) return;
+				followed.current = currentPath;
+				setScope(currentPath);
+			}, [currentPath]);
+
+			/** Run one mutation, then rescan. */
+			const mutate = React.useCallback(
+				async (key, method, payload, describe) => {
+					setBusy(key);
+					setNotice(null);
+					const result = await call(method, payload);
+					setBusy(null);
+					if (result.ok !== true) {
+						setNotice({ tone: 'error', text: errorText(result) });
+						return false;
+					}
+					if (typeof describe === 'function') setNotice(describe(result.value));
+					await load(scope);
+					return true;
+				},
+				[load, scope]
+			);
+
+			/** The workspace half of a request body, omitted for the user scope. */
+			const scopePayload = scope === 'global' ? {} : { workspacePath: scope };
+
+			const onToggle = React.useCallback(
+				(row, enabled) => {
+					void mutate(`toggle:${row.entryPath}`, 'toggle', { ...scopePayload, path: row.entryPath, enabled });
+				},
+				[mutate, scopePayload]
+			);
+
+			const confirmDelete = React.useCallback(async () => {
+				const row = pendingDelete;
+				if (row === null) return;
+				const done = await mutate(`delete:${row.entryPath}`, 'remove', { ...scopePayload, path: row.entryPath }, () => ({ tone: 'info', text: format(L.removed, { name: row.name }) }));
+				if (done) setPendingDelete(null);
+			}, [pendingDelete, mutate, scopePayload]);
+
+			/** Put one path on the clipboard, with a fallback for older shells. */
+			const copyText = React.useCallback((text) => {
+				const done = () => setNotice({ tone: 'info', text: `${L.copied}: ${text}` });
+				try {
+					if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+						navigator.clipboard.writeText(text).then(done, () => setNotice({ tone: 'error', text: 'clipboard unavailable' }));
+						return;
+					}
+				} catch (failure) {
+					/* fall through to the legacy path */
+				}
+				try {
+					const area = document.createElement('textarea');
+					area.value = text;
+					document.body.appendChild(area);
+					area.select();
+					document.execCommand('copy');
+					area.remove();
+					done();
+				} catch (failure) {
+					setNotice({ tone: 'error', text: 'clipboard unavailable' });
+				}
+			}, []);
+
+			const onCopy = React.useCallback((row) => copyText(row.file), [copyText]);
+
+			const onReveal = React.useCallback(
+				(row) => {
+					if (typeof openPath !== 'function') {
+						copyText(row.file);
+						return;
+					}
+					const announce = (failure) => {
+						const message = failure && failure.message ? String(failure.message) : String(failure);
+						/* The launch route answers "unavailable app" when the desktop
+						 * offers no file manager (a headless or SSH deployment); that
+						 * reads differently from a transport failure. */
+						setNotice({
+							tone: 'error',
+							text: /unavailable app|failed to launch/iu.test(message) ? L.revealUnavailable : format(L.revealFailed, { reason: message })
+						});
+					};
+					/* The route accepts an existing directory only, and what a user
+					 * wants to see is the skill itself: a bundle's own folder, or the
+					 * folder that holds a flat skill's `.md`. A bundle's row carries its
+					 * `SKILL.md`, so the folder is one segment up from that file. */
+					const file = String(row.file === void 0 ? '' : row.file);
+					const cut = file.lastIndexOf('/');
+					if (cut <= 0) {
+						announce(new Error('not a file under a directory'));
+						return;
+					}
+					try {
+						const result = openPath(file.slice(0, cut));
+						if (result && typeof result.catch === 'function') result.catch(announce);
+					} catch (failure) {
+						announce(failure);
+					}
+				},
+				[openPath, copyText]
+			);
+
+			/** Import one picked path into the active scope. */
+			const runImport = React.useCallback(
+				async (source) => {
+					if (typeof source !== 'string' || source.length === 0) return;
+					await mutate(
+						'import',
+						'import',
+						{ ...scopePayload, scope: scope === 'global' ? 'global' : 'project', source },
+						(value) => {
+							const imported = (value && value.imported) || [];
+							const first = imported[0];
+							const text = imported.length === 1 && first !== void 0 ? format(L.importedOne, { name: first.name }) : format(L.importedMany, { count: imported.length });
+							const shadowed = (value && value.shadowed) || [];
+							if (shadowed.length > 0) return { tone: 'warn', text: `${text} · ${format(L.shadowWarn, { name: shadowed[0].name })}` };
+							return { tone: 'info', text };
+						}
+					);
+				},
+				[mutate, scope, scopePayload]
+			);
+
+			const startImport = React.useCallback(async () => {
+				if (typeof pickDirectory !== 'function') {
+					setNotice({ tone: 'error', text: L.unavailable });
+					return;
+				}
+				let picked = null;
+				try {
+					picked = await pickDirectory();
+				} catch (failure) {
+					setNotice({ tone: 'error', text: failure && failure.message ? failure.message : String(failure) });
+					return;
+				}
+				await runImport(picked);
+			}, [pickDirectory, runImport]);
+
+			/** Open the external dialog and scan the machine's other agent tools. */
+			const openExternal = React.useCallback(async () => {
+				setNotice(null);
+				setExternal({ phase: 'loading', sources: [], error: null });
+				const result = await call('externalSources', scope === 'global' ? {} : { workspacePath: scope });
+				if (result.ok !== true) {
+					setExternal({ phase: 'ready', sources: [], error: errorText(result) });
+					return;
+				}
+				setExternal({ phase: 'ready', sources: (result.value && result.value.sources) || [], error: null });
+			}, [scope]);
+
+			/** Import the chosen external skills. */
+			const runExternalImport = React.useCallback(
+				async (choice) => {
+					if (!choice || choice.picks.length === 0) {
+						setNotice({ tone: 'error', text: L.externalNoSelection });
+						return;
+					}
+					const done = await mutate(
+						'external',
+						'importExternal',
+						{
+							workspacePath: choice.scope === 'global' ? void 0 : scope,
+							scope: choice.scope,
+							mode: choice.mode,
+							picks: choice.picks
+						},
+						(value) => {
+							const imported = (value && value.imported) || [];
+							const text = imported.length === 1 && imported[0] !== void 0 ? format(L.importedOne, { name: imported[0].name }) : format(L.externalImported, { count: imported.length });
+							const shadowed = (value && value.shadowed) || [];
+							if (shadowed.length > 0) return { tone: 'warn', text: `${text} · ${format(L.shadowWarn, { name: shadowed[0].name })}` };
+							return { tone: 'info', text };
+						}
+					);
+					if (done) setExternal(null);
+				},
+				[mutate, scope]
+			);
+
+			/** Create one scaffolded skill. */
+			const confirmCreate = React.useCallback(async () => {
+				if (draft === null) return;
+				const name = draft.name.trim();
+				if (name.length === 0) return;
+				const targetScope = draft.scope === 'global' ? 'global' : scope;
+				const done = await mutate(
+					'create',
+					'create',
+					{ workspacePath: targetScope === 'global' ? void 0 : targetScope, scope: draft.scope, name, description: draft.description.trim() },
+					() => ({ tone: 'info', text: format(L.createdOne, { name }) })
+				);
+				if (done) setDraft(null);
+			}, [draft, mutate, scope]);
+
+			const skills = (data && data.skills) || [];
+			const normalized = query.trim().toLowerCase();
+			const visible = normalized.length === 0 ? skills : skills.filter((row) => row.name.toLowerCase().includes(normalized) || String(row.description === void 0 ? '' : row.description).toLowerCase().includes(normalized));
+			const enabledRows = visible.filter((row) => row.enabled);
+			const disabledRows = visible.filter((row) => !row.enabled);
+			const anyBusy = busy !== null;
+
+			/** One titled group of rows. */
+			const group = (key, title, rows) =>
+				h(
+					'section',
+					{ key, 'data-group': key },
+					h('div', { className: 'dsh-skm-groupHead' }, h('span', { className: 'dsh-skm-groupTitle' }, title), h('span', { className: 'dsh-skm-groupCount' }, String(rows.length)), h('span', { className: 'dsh-skm-groupRule' })),
+					h(
+						'div',
+						{ className: 'dsh-skm-list' },
+						rows.map((row) => h(SkillRow, { key: row.entryPath, row, busy: anyBusy, onToggle, onDelete: setPendingDelete, onCopy, onReveal }))
+					)
+				);
+
+			const openCreate = () => setDraft({ name: '', description: '', scope: scope === 'global' ? 'global' : 'project' });
+
+			const cover = h(
+				'div',
+				null,
+				notice !== null ? h(Notice, { tone: notice.tone, onDismiss: () => setNotice(null) }, notice.text) : null,
+				phase === 'error'
+					? h('div', null, h(Notice, { tone: 'error' }, `${L.errorTitle} — ${error === null ? '' : error}`), h(Button, { variant: 'outline', size: 'sm', onClick: () => load(scope) }, L.retry))
+					: null
+			);
+
+			let body = null;
+			if (phase === 'loading') {
+				body = h('div', { className: 'dsh-skm-loading' }, h('span', { className: 'dsh-skm-spin' }, h(IconLoading, { size: 15 })), L.loading);
+			} else if (phase === 'ready' && skills.length === 0) {
+				body = h(
+					'div',
+					{ className: 'dsh-skm-empty' },
+					h('span', { className: 'dsh-skm-emptyGlyph' }, h(IconSkill, { size: 30 })),
+					h('div', { className: 'dsh-skm-emptyTitle' }, L.emptyTitle),
+					h('div', { className: 'dsh-skm-emptyBody' }, `${L.emptyBody} ${L.importHint}`),
+					h(
+						'div',
+						{ className: 'dsh-skm-emptyActions' },
+						h(Button, { variant: 'primary', size: 'sm', icon: h(IconPlus, { size: 13 }), onClick: openCreate }, L.create),
+						h(Button, { variant: 'outline', size: 'sm', icon: h(IconFolder, { size: 13 }), onClick: startImport }, L.importMenuLocal),
+						h(Button, { variant: 'outline', size: 'sm', icon: h(IconBrowse, { size: 13 }), onClick: openExternal }, L.importMenuExternal)
+					)
+				);
+			} else if (phase === 'ready' && visible.length === 0) {
+				body = h(
+					'div',
+					{ className: 'dsh-skm-empty' },
+					h('span', { className: 'dsh-skm-emptyGlyph' }, h(IconSearch, { size: 26 })),
+					h('div', { className: 'dsh-skm-emptyTitle' }, L.noMatch),
+					h('div', { className: 'dsh-skm-emptyBody' }, L.noMatchBody),
+					h('div', { className: 'dsh-skm-emptyActions' }, h(Button, { variant: 'outline', size: 'sm', onClick: () => setQuery('') }, L.searchClear))
+				);
+			} else if (phase === 'ready') {
+				body = h('div', null, enabledRows.length > 0 ? group('enabled', L.installed, enabledRows) : null, disabledRows.length > 0 ? group('disabled', L.disabledGroup, disabledRows) : null);
+			}
+
+			return h(
+				'div',
+				{ className: 'dsh-skm-page', 'data-testid': 'skill-manager-page' },
+				/* Decorative: the band the desktop window drags by. `aria-hidden`
+				 * because it carries no content, and it collapses to nothing on a
+				 * platform whose chrome is not the drag handle (the shell's own
+				 * rule only acts on darwin, but the space would still be spent). */
+				h('div', { className: 'dsh-skm-titlebar', 'data-window-drag': true, 'aria-hidden': 'true' }),
+				h(
+					'div',
+					{ className: 'dsh-skm-scroll' },
+					h(
+						'div',
+						{ className: 'dsh-skm-content' },
+						h(
+							'div',
+							{ className: 'dsh-skm-head', 'data-window-drag': true },
+							h('div', null, h('h1', { className: 'dsh-skm-title' }, L.title), h('div', { className: 'dsh-skm-sub' }, scope === 'global' ? L.scopeHelpGlobal : scope)),
+							h(
+								'div',
+								{ className: 'dsh-skm-headActions' },
+								h(Button, { variant: 'primary', size: 'sm', className: 'dsh-skm-new', icon: h(IconPlus, { size: 13 }), disabled: anyBusy || phase === 'loading', onClick: openCreate }, L.create)
+							)
+						),
+						h(
+							'div',
+							{ className: 'dsh-skm-toolbar' },
+							h(ScopePicker, {
+								scope,
+								workspaces,
+								currentPath,
+								disabled: anyBusy,
+								onSelect: (next) => {
+									followed.current = next === 'global' ? null : next;
+									setScope(next);
+								}
+							}),
+							h(
+								'label',
+								{ className: 'dsh-skm-search' },
+								h(IconSearch, { size: 14 }),
+								h('input', { type: 'search', value: query, placeholder: L.search, 'aria-label': L.search, onChange: (event) => setQuery(event.target.value) }),
+								query.length > 0 ? h('button', { type: 'button', className: 'dsh-skm-searchClear', 'aria-label': L.searchClear, onClick: () => setQuery('') }, h(IconClose, { size: 13 })) : null
+							),
+							h('span', { className: 'dsh-skm-count', title: L.installed }, String(skills.length)),
+							h(
+							'span',
+							{ className: 'dsh-skm-scope', style: { flex: 'none' } },
+							h('button', { type: 'button', className: 'dsh-skm-iconButton', 'aria-label': L.importButton, title: L.importHint, 'aria-haspopup': 'menu', 'aria-expanded': importMenu, disabled: anyBusy || phase === 'loading', onClick: () => setImportMenu((open) => !open) }, h(IconFolder, { size: 16 })),
+							importMenu
+								? h(
+										'div',
+										{ className: 'dsh-skm-popover dsh-skm-popoverRight', role: 'menu', style: { minWidth: '230px' } },
+										h(
+											'button',
+											{
+												type: 'button',
+												role: 'menuitem',
+												className: 'dsh-skm-menuRow',
+												onClick: () => {
+													setImportMenu(false);
+													startImport();
+												}
+											},
+											h('span', { className: 'dsh-skm-scopeIcon' }, h(IconFolder, { size: 14 })),
+											h('span', { className: 'dsh-skm-menuRowMain' }, h('span', { className: 'dsh-skm-menuRowName' }, L.importMenuLocal))
+										),
+										h(
+											'button',
+											{
+												type: 'button',
+												role: 'menuitem',
+												className: 'dsh-skm-menuRow',
+												onClick: () => {
+													setImportMenu(false);
+													openExternal();
+												}
+											},
+											h('span', { className: 'dsh-skm-scopeIcon' }, h(IconBrowse, { size: 14 })),
+											h('span', { className: 'dsh-skm-menuRowMain' }, h('span', { className: 'dsh-skm-menuRowName' }, L.importMenuExternal))
+										)
+									)
+								: null
+						),
+							h(
+								'button',
+								{ type: 'button', className: 'dsh-skm-iconButton', 'aria-label': L.refresh, disabled: anyBusy, onClick: () => load(scope) },
+								anyBusy ? h('span', { className: 'dsh-skm-spin' }, h(IconLoading, { size: 16 })) : h(IconRefresh, { size: 16 })
+							)
+						),
+						cover,
+						body
+					)
+				),
+				pendingDelete !== null
+					? h(
+							Dialog,
+							{
+								title: L.deleteTitle,
+								onClose: () => setPendingDelete(null),
+								actions: [
+									h(Button, { key: 'cancel', variant: 'outline', size: 'sm', onClick: () => setPendingDelete(null) }, L.deleteCancel),
+									h(Button, { key: 'go', variant: 'primary', size: 'sm', disabled: anyBusy, onClick: confirmDelete }, L.deleteConfirm)
+								]
+							},
+							h('p', { className: 'dsh-skm-dialogBody' }, format(L.deleteBody, { name: pendingDelete.name })),
+							h('div', { className: 'dsh-skm-rowPath', title: pendingDelete.file }, pendingDelete.file)
+						)
+					: null,
+				external !== null
+					? h(ExternalImportDialog, {
+							sources: external.sources,
+							phase: external.phase,
+							error: external.error,
+							scope,
+							busy: anyBusy,
+							onClose: () => setExternal(null),
+							onRescan: openExternal,
+							onImport: runExternalImport
+						})
+					: null,
+				draft !== null
+					? h(
+							Dialog,
+							{
+								title: L.createTitle,
+								onClose: () => setDraft(null),
+								actions: [
+									h(Button, { key: 'cancel', variant: 'outline', size: 'sm', onClick: () => setDraft(null) }, L.createCancel),
+									h(Button, { key: 'go', variant: 'primary', size: 'sm', disabled: anyBusy || draft.name.trim().length === 0, onClick: confirmCreate }, L.createConfirm)
+								]
+							},
+							h(
+								'div',
+								{ className: 'dsh-skm-field' },
+								h('label', { className: 'dsh-skm-fieldLabel', htmlFor: 'dsh-skm-name' }, L.createName),
+								h('input', {
+									id: 'dsh-skm-name',
+									className: 'dsh-skm-input',
+									value: draft.name,
+									autoFocus: true,
+									placeholder: 'my-skill',
+									onChange: (event) => setDraft((current) => ({ ...current, name: event.target.value }))
+								}),
+								h('div', { className: 'dsh-skm-fieldHint' }, L.createNameHint)
+							),
+							h(
+								'div',
+								{ className: 'dsh-skm-field' },
+								h('label', { className: 'dsh-skm-fieldLabel', htmlFor: 'dsh-skm-desc' }, L.createDescription),
+								h('textarea', {
+									id: 'dsh-skm-desc',
+									className: 'dsh-skm-textarea',
+									value: draft.description,
+									onChange: (event) => setDraft((current) => ({ ...current, description: event.target.value }))
+								})
+							),
+							h(
+								'div',
+								{ className: 'dsh-skm-field' },
+								h('span', { className: 'dsh-skm-fieldLabel' }, L.createScope),
+								h(
+									'div',
+									{ className: 'dsh-skm-radioRow' },
+									h(
+										'button',
+										{ type: 'button', className: 'dsh-skm-radio', 'data-active': draft.scope === 'global', onClick: () => setDraft((current) => ({ ...current, scope: 'global' })) },
+										h('span', { className: 'dsh-skm-radioName' }, L.scopeUser),
+										h('span', { className: 'dsh-skm-radioHint' }, L.scopeHelpGlobal)
+									),
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'dsh-skm-radio',
+											'data-active': draft.scope === 'project',
+											disabled: scope === 'global',
+											onClick: () => setDraft((current) => ({ ...current, scope: 'project' }))
+										},
+										h('span', { className: 'dsh-skm-radioName' }, L.scopeHelpProject),
+										h('span', { className: 'dsh-skm-radioHint' }, scope === 'global' ? L.noSession : scope)
+									)
+								)
+							)
+						)
+					: null
+			);
+		}
+
+		/** The sidebar entry's glyph. */
+		function SkillManagerIcon(props) {
+			return h(IconSkill, { size: props && props.size ? props.size : 16 });
+		}
+
+		/**
+		 * Services this browser half requires.
+		 *
+		 * Deliberately short: every name here must have an active provider or the
+		 * whole fiber parks. The slot registry (registrations), the Remote gateway
+		 * (reveal-in-file-manager) and the workspace service (directory picking)
+		 * are present in every shipped Web composition.
+		 */
+		const inject = ['slots', 'remote', 'uiWorkspace'];
+
+		/**
+		 * Browser plugin body.
+		 * @param ctx - client root context.
+		 */
+		function apply(ctx) {
+			try {
+				zhActive = detectZh(ctx);
+				/** Live service lookup: a sibling client plugin may still be activating. */
+				const serviceOf = (name) => {
+					try {
+						return typeof ctx.get === 'function' ? ctx.get(name) : void 0;
+					} catch (error) {
+						return void 0;
+					}
+				};
+				const injected = () => ({
+					pickDirectory: () => {
+						const workspace = serviceOf('uiWorkspace');
+						if (workspace === void 0 || workspace === null || typeof workspace.pickDirectory !== 'function') {
+							return Promise.reject(new Error('directory picker unavailable'));
+						}
+						return workspace.pickDirectory();
+					},
+					openPath: (directory) => {
+						/* "Reveal in file manager" goes through the host's own launch
+						 * route with the Finder catalog id. The route takes an existing
+						 * DIRECTORY only — the page resolves a skill row to the folder the
+						 * user should see, so this side stays a dumb launcher. */
+						return fetch('/open-in-app/open', {
+							method: 'POST',
+							headers: { 'content-type': 'application/json' },
+							body: JSON.stringify({ app: 'finder', path: directory })
+						}).then(async (response) => {
+							const body = await response.json().catch(() => null);
+							if (response.ok && body !== null && body.ok === true) return body;
+							const message = body !== null && body.error && body.error.message ? String(body.error.message) : `HTTP ${response.status}`;
+							throw new Error(message);
+						});
+					},
+					detectLanguage: () => detectZh(ctx)
+				});
+				ctx.slots.inject('main', () =>
+					ctx.slots.register(
+						{
+							name: 'main',
+							key: PANEL_ID,
+							inject: injected
+						},
+						SkillManagerPage
+					)
+				);
+				ctx.slots.inject('sidebar.panellist', () =>
+					ctx.slots.register(
+						{
+							name: 'sidebar.panellist',
+							id: PANEL_ID,
+							/* Below the shipped Plugins (0) and Automation tasks (10) rows. */
+							order: 20,
+							label: () => L.panel
+						},
+						SkillManagerIcon
+					)
+				);
+				/* Last, and alone: the two registrations above are what make the
+				 * feature reachable, so a stylesheet failure must not be able to
+				 * take them down with it (the catch below would swallow the throw
+				 * and leave the page permanently missing). */
+				ctx.effect(() => insertStyles(), 'skill-manager: stylesheet');
+			} catch (error) {
+				/* A broken optional page must never take the application boot down. */
+				console.error('[skill-manager] activation failed:', error);
+			}
+		}
+
+		exports.SkillManagerPage = SkillManagerPage;
+		exports.SkillManagerIcon = SkillManagerIcon;
+		exports.apply = apply;
+		exports.inject = inject;
+		return module.exports;
+	}
+});

@@ -1,0 +1,44 @@
+{
+  "name": "dsh-plugin-archive-manager",
+  "version": "1.0.0",
+  "description": "归档会话 / Archive Manager — 设置中的已归档会话管理器：按项目分组查询、删除、重新激活；并集成技能管理（技能页）与工作区配色",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/skills.cjs",
+    "lib/archive.cjs",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "docs/API.md",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/extract-factory.mjs && node scripts/build-client.mjs",
+    "check": "node --check lib/index.js && node --check lib/skills.cjs && node --check lib/archive.cjs && node --check lib/client.js",
+    "test": "node test/archive-host.cjs && node test/route-harness.cjs && node test/client-harness.cjs"
+  },
+  "license": "MIT"
+}

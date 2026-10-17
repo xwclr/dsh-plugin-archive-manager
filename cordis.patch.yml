@@ -1,0 +1,11 @@
+# dsh-plugin-archive-manager bundle patch.
+#
+# One Loader row for this package. The row is also the browser-roster row: the
+# client-modules node half scans every enabled entry that declares `dsh.client`,
+# and this package declares it, so `lib/client.js` reaches the page.
+#
+# The row id is the identity the browser half's HTTP routes are mounted under;
+# keep it stable.
+- insert:
+    - id: archive-manager
+      name: 'dsh-plugin-archive-manager'

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Archive Manager",
+    "description": "Manages archived sessions in Settings: grouped by project, searchable, restorable or deletable. Also ships the Skill Manager sidebar page and workspace colors."
+  }
+}
