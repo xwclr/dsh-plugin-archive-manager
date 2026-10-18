@@ -110,6 +110,12 @@ Request body:
 { "sessionIds": ["session-<uuid>", "..."] }
 ```
 
+An optional `"any": true` widens the request to sessions that were never
+archived: the Settings page omits it (it only ever deletes archived rows), while
+the Session row menu sends it so an ordinary sidebar row can be deleted too.
+Everything else — the running refusal, the detached workspace, the removed log
+and projection cache, the `api-session/removed` announcement — is identical.
+
 Value:
 
 ```json

@@ -389,6 +389,11 @@ function call(handler, method, body, extraHeaders) {
 			notArchived.body.value.deleted.length === 0 &&
 				notArchived.body.value.failed[0].message.includes('not archived') && notArchived.body.value.failed[0].code === 'not-archived'
 		);
+		/* The session menu deletes rows that were never archived. */
+		const menuDelete = await invoke('delete', { sessionIds: [s4], any: true });
+		check('an unrestricted delete removes an unarchived session', sameJson(menuDelete.body.value.deleted, [s4]), JSON.stringify(menuDelete.body.value.failed));
+		check('an unrestricted delete reports no failure', menuDelete.body.value.failed.length === 0);
+
 		const badBody = await invoke('delete', {});
 		check(
 			'a malformed delete body is a failed envelope',

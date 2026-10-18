@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-archive-manager",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "归档会话 / Archive Manager — 设置中的已归档会话管理器：按项目分组查询、删除、重新激活；并集成技能管理（技能页）与工作区配色",
   "type": "module",
   "main": "lib/index.js",

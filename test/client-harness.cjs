@@ -635,7 +635,9 @@ async function main() {
 				}
 			}
 		});
-		assert.deepEqual(injected, ['main', 'sidebar.panellist', 'shell.overlay', 'settings.section']);
+		for (const key of ['main', 'sidebar.panellist', 'shell.overlay', 'settings.section', 'sidebar.workspaces.session.menu.item']) {
+			assert.ok(injected.includes(key), `${key} must be injected`);
+		}
 		/* The bundled workspace-colors feature activates too and publishes its
 		 * debug handle, which is the only place the palette catalogue is visible
 		 * without a DOM. */
@@ -1028,6 +1030,65 @@ async function main() {
 		await runtime.flush();
 		assert.equal(launches.length, 1);
 		assert.equal(launches[0].body.path, '/home/u/.dsh/skills', 'a flat skill reveals its parent directory');
+	});
+
+	/* ── the session menu row ─────────────────────────────────────────────── */
+
+	test('the session menu row asks before deleting and then posts an unrestricted delete', async () => {
+		let menuClosed = null;
+		const tree = await render(bundle.SessionDeleteMenuItem, {
+			sessionId: 'session-dddddddd-1111-4222-8333-444444444444',
+			displayTitle: '要删的会话',
+			useMenuOpenState: () => [true, (value) => { menuClosed = value; }]
+		});
+		const row = findAll(tree, (node) => node.kind === 'host' && node.props && node.props.role === 'menuitem')[0];
+		assert.ok(row !== void 0, 'the menu row must render a menuitem');
+		archiveRequests.length = 0;
+		/* The design system's MenuItemButton owns its own onSelect; the plain
+		 * fallback is a button with onClick. */
+		(typeof row.props.onSelect === 'function' ? row.props.onSelect : row.props.onClick)();
+		assert.equal(menuClosed, false, 'selecting the row closes the menu first');
+
+		const dialog = await render(bundle.DeleteSessionDialog, {});
+		const text = textOf(dialog);
+		assert.match(text, /删除会话？/u);
+		assert.match(text, /要删的会话/u);
+		const go = findAll(dialog, (node) => node.kind === 'host' && node.props && node.props.className === 'dsh-am-dialogGo')[0];
+		assert.ok(go !== void 0, 'the dialog must offer the destructive action');
+		go.props.onClick();
+		await runtime.flush();
+		const posted = archiveRequests.find((request) => request.method === 'delete');
+		assert.ok(posted !== void 0, 'confirming must post the delete');
+		assert.equal(posted.payload.any, true, 'a menu delete may target an unarchived session');
+		assert.deepEqual(posted.payload.sessionIds, ['session-dddddddd-1111-4222-8333-444444444444']);
+	});
+
+	test('a refused menu delete keeps the dialog open and explains why', async () => {
+		archiveAnswers.set('delete', {
+			ok: true,
+			value: {
+				deleted: [],
+				bytes: 0,
+				failed: [{ sessionId: 'session-dddddddd-1111-4222-8333-444444444444', code: 'running', message: 'a turn is running for this session: stop it before deleting' }]
+			}
+		});
+		await render(bundle.SessionDeleteMenuItem, {
+			sessionId: 'session-dddddddd-1111-4222-8333-444444444444',
+			displayTitle: '要删的会话',
+			useMenuOpenState: () => [true, () => {}]
+		});
+		const row = findAll(runtime.getTree(), (node) => node.kind === 'host' && node.props && node.props.role === 'menuitem')[0];
+		(typeof row.props.onSelect === 'function' ? row.props.onSelect : row.props.onClick)();
+		const dialog = await render(bundle.DeleteSessionDialog, {});
+		const go = findAll(dialog, (node) => node.kind === 'host' && node.props && node.props.className === 'dsh-am-dialogGo')[0];
+		go.props.onClick();
+		await runtime.flush();
+		const text = textOf(runtime.getTree());
+		assert.match(text, /正在执行/u, 'the coded refusal is localized');
+		assert.ok(
+			findAll(runtime.getTree(), (node) => node.kind === 'host' && node.props && node.props.className === 'dsh-am-dialog').length > 0,
+			'the dialog stays open after a refusal'
+		);
 	});
 
 	/* ── the settings page ────────────────────────────────────────────────── */

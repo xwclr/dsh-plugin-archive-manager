@@ -106,6 +106,8 @@ sections.push(
 		'\t\texports.SkillManagerIcon = __skills.SkillManagerIcon;',
 		'\t\texports.WorkspaceColorPalette = __colors.WorkspaceColorPalette;',
 		'\t\texports.ArchiveManagerPage = __archive.ArchiveManagerPage;',
+		'\t\texports.SessionDeleteMenuItem = __archive.SessionDeleteMenuItem;',
+		'\t\texports.DeleteSessionDialog = __archive.DeleteSessionDialog;',
 		'\t\treturn module.exports;',
 		'\t}',
 		'});',
