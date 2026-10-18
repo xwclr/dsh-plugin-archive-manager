@@ -636,6 +636,16 @@ async function main() {
 			}
 		});
 		assert.deepEqual(injected, ['main', 'sidebar.panellist', 'shell.overlay', 'settings.section']);
+		/* The bundled workspace-colors feature activates too and publishes its
+		 * debug handle, which is the only place the palette catalogue is visible
+		 * without a DOM. */
+		const colorsApi = sandbox.__DSH_WORKSPACE_COLORS__;
+		assert.ok(colorsApi !== void 0, 'the colors feature must expose its debug handle');
+		assert.equal(colorsApi.colors.length, 10, 'ten workspace colours');
+		for (const id of ['teal', 'pink', 'brown']) {
+			assert.ok(colorsApi.colors.includes(id), `${id} must be offered`);
+		}
+		assert.equal(colorsApi.colors[0], 'grey', 'the palette keeps its order');
 		const sidebar = registrations.find((entry) => entry.options.name === 'sidebar.panellist');
 		const panel = registrations.find((entry) => entry.options.name === 'main');
 		assert.ok(sidebar !== void 0, 'the sidebar entry must be registered');

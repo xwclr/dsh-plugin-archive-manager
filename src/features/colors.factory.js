@@ -28,38 +28,72 @@
 		const PALETTE_WIDTH = 184;
 		const VIEWPORT_MARGIN = 8;
 
-		/** The seven workspace colours, in menu order. */
+		/** The ten workspace colours, in menu order: a hue wheel, then brown. */
 		const PALETTE = [
 			{ id: "grey", zh: "灰色", en: "Grey", color: "#9AA0A6" },
 			{ id: "red", zh: "红色", en: "Red", color: "#F0595B" },
 			{ id: "orange", zh: "橙色", en: "Orange", color: "#F29A3C" },
 			{ id: "yellow", zh: "黄色", en: "Yellow", color: "#E2B32B" },
 			{ id: "green", zh: "绿色", en: "Green", color: "#2FB57B" },
+			{ id: "teal", zh: "青色", en: "Teal", color: "#2FB3B8" },
 			{ id: "blue", zh: "蓝色", en: "Blue", color: "#4C9BFF" },
-			{ id: "purple", zh: "紫色", en: "Purple", color: "#A98BEA" }
+			{ id: "purple", zh: "紫色", en: "Purple", color: "#A98BEA" },
+			{ id: "pink", zh: "粉色", en: "Pink", color: "#E8739F" },
+			{ id: "brown", zh: "棕色", en: "Brown", color: "#A97C50" }
 		];
 		const PALETTE_BY_ID = new Map(PALETTE.map((entry) => [entry.id, entry]));
 
-		/** The page's language, read once: this package owns no locale namespace. */
-		const ZH = (() => {
+		/**
+		 * The page's language. The document hint is only the starting guess: the
+		 * desktop launch flag can disagree with the product UI, so `apply` asks the
+		 * client locale service and this flag flips once, before anything renders.
+		 */
+		let zhActive = (() => {
 			const lang = (document.documentElement.getAttribute("lang") || navigator.language || "zh").toLowerCase();
 			return lang.startsWith("zh");
 		})();
-		const L = ZH
-			? {
-					changeColor: "更改颜色",
-					clear: "默认颜色",
-					paletteLabel: "工作区颜色",
-					on: "当前颜色"
-			  }
-			: {
-					changeColor: "Change colour",
-					clear: "Default colour",
-					paletteLabel: "Workspace colour",
-					on: "Current colour"
-			  };
 
-		const colourLabel = (entry) => (ZH ? entry.zh : entry.en);
+		const L_ZH = {
+			changeColor: "更改颜色",
+			clear: "默认颜色",
+			paletteLabel: "工作区颜色",
+			on: "当前颜色"
+		};
+		const L_EN = {
+			changeColor: "Change colour",
+			clear: "Default colour",
+			paletteLabel: "Workspace colour",
+			on: "Current colour"
+		};
+		/** Live dictionary: a re-render after activation reads the resolved language. */
+		const L = new Proxy(
+			{},
+			{
+				get(_target, key) {
+					const table = zhActive ? L_ZH : L_EN;
+					return table[key] === void 0 ? String(key) : table[key];
+				}
+			}
+		);
+
+		const colourLabel = (entry) => (zhActive ? entry.zh : entry.en);
+
+		/** Resolve the UI language from the client locale, falling back to the page hint. */
+		function detectZh(ctx) {
+			try {
+				const locale = typeof ctx.get === "function" ? ctx.get("locale") : void 0;
+				if (locale !== void 0 && locale !== null) {
+					const snapshot =
+						typeof locale.getLocale === "function" ? locale.getLocale() : typeof locale.getSnapshot === "function" ? locale.getSnapshot() : null;
+					const id = snapshot && (snapshot.id || snapshot.locale || snapshot.language);
+					if (typeof id === "string" && id.length > 0) return id.toLowerCase().startsWith("zh");
+				}
+			} catch (error) {
+				/* fall through to the document hint */
+			}
+			const lang = (document.documentElement.getAttribute("lang") || navigator.language || "zh").toLowerCase();
+			return String(lang).startsWith("zh");
+		}
 
 		/* ────────────────────────────────────────────────────────────────────
 		 * Preference store (page-local, observable)
@@ -279,7 +313,9 @@
 		}
 
 		function palettePosition(rect) {
-			const height = (PALETTE.length + 1) * 32 + 16;
+			/* Row 32px high, plus the separator and the clear row; a ten-colour
+			 * palette can outgrow a small window, so the card scrolls inside it. */
+			const height = Math.min((PALETTE.length + 2) * 32 + 16, Math.max(0, window.innerHeight - 2 * VIEWPORT_MARGIN));
 			const vw = window.innerWidth;
 			const vh = window.innerHeight;
 			let left = rect.left;
@@ -442,6 +478,7 @@
 			RAIL_CSS +
 			/* Palette card (ported from the menu surface's own tokens). */
 			".dsh-wsc-palette{position:fixed;z-index:1300;box-sizing:border-box;padding:4px;display:flex;flex-direction:column;pointer-events:auto;" +
+			"max-height:calc(100vh - " + VIEWPORT_MARGIN * 2 + "px);overflow-y:auto;overscroll-behavior:contain;" +
 			"border-radius:var(--dsw-radius-md,8px);border:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08));" +
 			"background:var(--dsw-menu-surface-fill,var(--dsw-alias-bg-base,#fff));backdrop-filter:var(--dsw-menu-backdrop-filter,none);" +
 			"box-shadow:var(--dsw-elevation-prominent,0 8px 28px rgba(0,0,0,.18));color:var(--dsw-alias-label-primary,#1f1f1f)}" +
@@ -565,6 +602,7 @@
 		 */
 		function apply(ctx) {
 			try {
+				zhActive = detectZh(ctx);
 				ctx.effect(() => insertStyles(), "workspace-colors: stylesheet");
 				ctx.effect(() => startDomDecoration(), "workspace-colors: workspace rows");
 				ctx.effect(() => exposeDebugApi(), "workspace-colors: debug handle");
