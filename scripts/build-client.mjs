@@ -22,6 +22,7 @@ const read = (file) => readFileSync(join(root, file), 'utf8').trimEnd();
 const skills = read('src/features/skills.factory.js');
 const colors = read('src/features/colors.factory.js');
 const archive = read('src/features/archive.factory.js');
+const features = read('src/features/features.factory.js');
 
 const header = [
 	'/**',
@@ -71,12 +72,13 @@ sections.push(header);
  * @param name - local binding name.
  * @param fragment - the factory source.
  * @param comment - one-line description for the generated file.
+ * @param args - argument list the factory is called with.
  */
-const embed = (name, fragment, comment) => {
+const embed = (name, fragment, comment, args = 'require') => {
 	sections.push(`\t\t/** ${comment} */`);
 	sections.push(`\t\tconst ${name} = (`);
 	sections.push(fragment);
-	sections.push('\t\t)(require);');
+	sections.push(`\t\t)(${args});`);
 	sections.push('');
 };
 
@@ -85,45 +87,103 @@ embed('__colors', colors, '工作区配色 / Workspace Colors (src/features/colo
 embed('__archive', archive, '归档会话 / Archive Manager (src/features/archive.factory.js).');
 
 sections.push(`
+		/** Where the user's own feature switches live. */
+		const __PREF_KEY = 'dsh-plugin-archive-manager.features.v1';
+		const __FEATURE_KEYS = ['archive', 'skills', 'colors'];
+
+		/** Coerce a partial flag object into three booleans; absent means on. */
+		function __normalizeFlags(source) {
+			const value = source !== null && typeof source === 'object' ? source : {};
+			const flags = {};
+			for (const key of __FEATURE_KEYS) flags[key] = value[key] !== false;
+			return flags;
+		}
+
+		/** The Host row's config, published into the index document at boot. */
+		function __hostFlags() {
+			try {
+				const raw = typeof window !== 'undefined' ? window.__DSH_ARCHIVE_MANAGER_FEATURES__ : void 0;
+				if (raw !== null && typeof raw === 'object') return __normalizeFlags(raw);
+			} catch (error) {
+				/* an unreadable global keeps every feature on */
+			}
+			return { archive: true, skills: true, colors: true };
+		}
+
+		/** The user's own switches, stored on this machine. */
+		function __readPrefs() {
+			try {
+				const store = typeof window !== 'undefined' ? window.localStorage : void 0;
+				const raw = store === void 0 || store === null ? null : store.getItem(__PREF_KEY);
+				if (typeof raw === 'string' && raw.length > 0) return __normalizeFlags(JSON.parse(raw));
+			} catch (error) {
+				/* a blocked or corrupt store falls back to "on" */
+			}
+			return { archive: true, skills: true, colors: true };
+		}
+
+		/** Persist the user's switches and return what was stored. */
+		function __writePrefs(next) {
+			const value = __normalizeFlags(next);
+			try {
+				const store = typeof window !== 'undefined' ? window.localStorage : void 0;
+				if (store !== void 0 && store !== null) store.setItem(__PREF_KEY, JSON.stringify(value));
+			} catch (error) {
+				/* persistence is optional; the in-memory result still applies */
+			}
+			return value;
+		}
+
+		/** The controls shared with the feature-switch page. */
+		const __featureControls = {
+			host: __hostFlags,
+			readPrefs: __readPrefs,
+			writePrefs: __writePrefs,
+			effective() {
+				const host = __hostFlags();
+				const prefs = __readPrefs();
+				const flags = {};
+				for (const key of __FEATURE_KEYS) flags[key] = host[key] && prefs[key];
+				return flags;
+			},
+			reload() {
+				try {
+					if (typeof window !== 'undefined' && window.location) window.location.reload();
+				} catch (error) {
+					/* ignore */
+				}
+			}
+		};
+`);
+
+embed('__featuresPage', features, '功能开关 / Plugin features (src/features/features.factory.js).', 'require, __featureControls');
+
+sections.push(`
 		const __features = [
 			{ key: 'archive', module: __archive },
 			{ key: 'skills', module: __skills },
 			{ key: 'colors', module: __colors }
 		];
 
-		/**
-		 * The three switches the Host row declared (the Config schema in lib/index.js).
-		 *
-		 * The Host publishes them through an index injection before the page
-		 * boots; a feature that is off registers nothing. A page without the
-		 * global (an older Host, a cached index) keeps every feature on.
-		 * @returns the resolved flags.
-		 */
-		function __readFeatureFlags() {
-			const flags = { archive: true, skills: true, colors: true };
-			try {
-				const raw = typeof window !== 'undefined' ? window.__DSH_ARCHIVE_MANAGER_FEATURES__ : void 0;
-				if (raw !== null && typeof raw === 'object') {
-					for (const key of ['archive', 'skills', 'colors']) if (raw[key] === false) flags[key] = false;
-				}
-			} catch (error) {
-				/* keep every feature on when the page global is unreadable */
-			}
-			return flags;
-		}
-
-		/** Services the three features need, de-duplicated. */
+		/** Services the bundled features need, de-duplicated. */
+		const __modules = [__featuresPage].concat(__features.map((feature) => feature.module));
 		const inject = Array.from(
-			new Set(__features.flatMap((feature) => (Array.isArray(feature.module.inject) ? feature.module.inject : [])))
+			new Set(__modules.flatMap((entry) => (Array.isArray(entry.inject) ? entry.inject : [])))
 		);
 
 		/**
-		 * Browser plugin body: activate each bundled feature the row enabled,
-		 * isolated so one failure cannot take the others down.
+		 * Browser plugin body: the switch page always mounts (it is where a
+		 * disabled feature is turned back on), then each enabled feature runs in
+		 * isolation so one failure cannot take the others down.
 		 * @param ctx - client root context.
 		 */
 		function apply(ctx) {
-			const flags = __readFeatureFlags();
+			const flags = __featureControls.effective();
+			try {
+				__featuresPage.apply(ctx);
+			} catch (error) {
+				console.error('[archive-manager] the feature switch page failed to activate:', error);
+			}
 			for (const feature of __features) {
 				if (flags[feature.key] === false) {
 					console.info('[archive-manager] feature disabled by config:', feature.key);
@@ -139,6 +199,7 @@ sections.push(`
 
 		exports.apply = apply;
 		exports.inject = inject;
+		exports.FeaturesPage = __featuresPage.FeaturesPage;
 		exports.SkillManagerPage = __skills.SkillManagerPage;
 		exports.SkillManagerIcon = __skills.SkillManagerIcon;
 		exports.WorkspaceColorPalette = __colors.WorkspaceColorPalette;

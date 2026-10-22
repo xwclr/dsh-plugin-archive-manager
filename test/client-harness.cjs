@@ -648,6 +648,15 @@ async function main() {
 			assert.ok(colorsApi.colors.includes(id), `${id} must be offered`);
 		}
 		assert.equal(colorsApi.colors[0], 'grey', 'the palette keeps its order');
+		assert.equal(colorsApi.icons.length, 24, 'twenty-four workspace icons');
+		for (const id of ['folder', 'terminal', 'branch', 'shield']) {
+			assert.ok(colorsApi.icons.includes(id), `${id} must be offered`);
+		}
+		assert.equal(typeof colorsApi.setIcon, 'function', 'the icon choice is writable');
+		colorsApi.setIcon('workspace:test', 'terminal');
+		assert.equal(colorsApi.getIcon('workspace:test'), 'terminal', 'the icon choice round-trips');
+		colorsApi.setIcon('workspace:test', null);
+		assert.equal(colorsApi.getIcon('workspace:test'), null, 'clearing the icon works');
 		const sidebar = registrations.find((entry) => entry.options.name === 'sidebar.panellist');
 		const panel = registrations.find((entry) => entry.options.name === 'main');
 		assert.ok(sidebar !== void 0, 'the sidebar entry must be registered');
@@ -1064,7 +1073,7 @@ async function main() {
 
 	test('a disabled archive feature registers neither the page nor the menu row', () => {
 		const result = applyWithFlags({ archive: false });
-		assert.ok(!result.injected.includes('settings.section'), 'no settings page');
+		assert.ok(!result.registrations.some((entry) => entry.options.id === 'archive-manager'), 'no archived-sessions page');
 		assert.ok(!result.injected.includes('sidebar.workspaces.session.menu.item'), 'no menu row');
 		assert.ok(result.injected.includes('main'), 'the skills page still activates');
 	});
@@ -1087,8 +1096,35 @@ async function main() {
 
 	test('disabling every feature registers nothing at all', () => {
 		const result = applyWithFlags({ archive: false, skills: false, colors: false });
-		assert.equal(result.injected.length, 0);
-		assert.equal(result.registrations.length, 0);
+		assert.equal(result.registrations.length, 1, 'only the feature switch page remains');
+		assert.equal(result.registrations[0].options.id, 'archive-manager.features');
+		assert.deepEqual(result.injected, ['settings.section']);
+	});
+
+	test('the feature switch page lists three switches and saves a change', async () => {
+		delete sandbox.__DSH_ARCHIVE_MANAGER_FEATURES__;
+		const tree = await render(bundle.FeaturesPage, {});
+		const text = textOf(tree);
+		assert.match(text, /归档会话/u);
+		assert.match(text, /技能管理/u);
+		assert.match(text, /工作区配色/u);
+		const switches = findAll(tree, (node) => node.kind === 'host' && node.props && node.props.role === 'switch');
+		assert.equal(switches.length, 3, 'one switch per feature');
+		switches[1].props.onClick();
+		await runtime.flush();
+		assert.match(textOf(runtime.getTree()), /刷新页面后生效/u, 'the change asks for a reload');
+	});
+
+	test('a host-disabled feature is locked in the switch page', async () => {
+		sandbox.__DSH_ARCHIVE_MANAGER_FEATURES__ = { archive: true, skills: false, colors: true };
+		const tree = await render(bundle.FeaturesPage, {});
+		const text = textOf(tree);
+		assert.match(text, /已被插件配置/u);
+		const skillsRow = findAll(tree, (node) => node.kind === 'host' && node.props && node.props['data-feature'] === 'skills')[0];
+		assert.ok(skillsRow !== void 0, 'the skills row must render');
+		const locked = findAll(skillsRow, (node) => node.kind === 'host' && node.props && node.props.role === 'switch')[0];
+		assert.equal(locked.props.disabled, true, 'the switch cannot re-enable a host-disabled feature');
+		delete sandbox.__DSH_ARCHIVE_MANAGER_FEATURES__;
 	});
 
 	/* ── the session menu row ─────────────────────────────────────────────── */

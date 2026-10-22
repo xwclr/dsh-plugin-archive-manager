@@ -4,7 +4,7 @@
  * Lifted verbatim from the standalone `dsh-plugin-workspace-colors` client bundle
  * by `scripts/extract-factory.mjs`; only the loader wrapper was removed. The
  * feature paints workspace rows, hangs their sessions off a coloured rail, and
- * owns the "更改颜色" palette overlay.
+ * owns the "更改颜色" / "更改图标" palette overlays.
  *
  * @param require - the module table this plugin's factory received.
  * @returns the feature module: `{ apply, inject, WorkspaceColorPalette }`.
@@ -20,11 +20,14 @@
 
 		const PLUGIN_ID = "dsh-plugin-workspace-colors";
 		const STORAGE_KEY = "dsh.workspace-colors.v1";
+		const ICON_STORAGE_KEY = "dsh.workspace-icons.v1";
 		const ROW_SELECTOR = '[data-row-key^="workspace:"]';
 		const ROW_ATTR = "data-dsh-wsc";
+		const ICON_ATTR = "data-dsh-wsc-icon";
 		const SESSION_SELECTOR = '[data-row-key^="session:"]';
 		const RAIL_ATTR = "data-dsh-wsc-rail";
 		const MENU_ITEM_ATTR = "data-dsh-wsc-menu-item";
+		const MENU_ICON_ITEM_ATTR = "data-dsh-wsc-menu-icon";
 		const PALETTE_WIDTH = 184;
 		const VIEWPORT_MARGIN = 8;
 
@@ -44,6 +47,226 @@
 		const PALETTE_BY_ID = new Map(PALETTE.map((entry) => [entry.id, entry]));
 
 		/**
+		 * The workspace icon catalogue, in picker order. Each `body` is the inner
+		 * markup of a 24x24 stroke-only glyph: geometry plus the presentation
+		 * attributes, with no stroke colour — the caller supplies that, because the
+		 * row badge paints dark ink and the picker paints `currentColor`.
+		 */
+		const ICONS = [
+			{
+				id: "folder",
+				zh: "文件夹",
+				en: "Folder",
+				body:
+					'<path d="M3.5 7.5a2 2 0 0 1 2-2h3.2l2.1 2.4h7.1a2 2 0 0 1 2 2v7.1a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "terminal",
+				zh: "终端",
+				en: "Terminal",
+				body:
+					'<rect x="3" y="4.5" width="18" height="15" rx="2.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="m7 9.5 3 2.5-3 2.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<line x1="12.5" y1="14.5" x2="16.5" y2="14.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "code",
+				zh: "代码",
+				en: "Code",
+				body:
+					'<path d="m8.5 7.5-4.5 4.5 4.5 4.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="m15.5 7.5 4.5 4.5-4.5 4.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<line x1="13.5" y1="4.5" x2="10.5" y2="19.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "search",
+				zh: "搜索",
+				en: "Search",
+				body:
+					'<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<line x1="15.4" y1="15.4" x2="20.5" y2="20.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "branch",
+				zh: "分支",
+				en: "Branch",
+				body:
+					'<circle cx="6.5" cy="5.5" r="2" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<circle cx="6.5" cy="18.5" r="2" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<circle cx="17.5" cy="8.5" r="2" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M6.5 7.5v9" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M17.5 10.5v1a4 4 0 0 1-4 4h-7" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "cloud",
+				zh: "云",
+				en: "Cloud",
+				body:
+					'<path d="M7 18.5h9.5a3.5 3.5 0 0 0 0-7 5.5 5.5 0 0 0-10.6-1.2A4.3 4.3 0 0 0 7 18.5Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "database",
+				zh: "数据库",
+				en: "Database",
+				body:
+					'<path d="M5 6c0-1.66 3.13-3 7-3s7 1.34 7 3-3.13 3-7 3-7-1.34-7-3Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M5 6v12c0 1.66 3.13 3 7 3s7-1.34 7-3V6" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M5 12c0 1.66 3.13 3 7 3s7-1.34 7-3" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "globe",
+				zh: "地球",
+				en: "Globe",
+				body:
+					'<circle cx="12" cy="12" r="8.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M3.5 12h17" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M12 3.5c2.4 2.5 3.6 5.4 3.6 8.5s-1.2 6-3.6 8.5c-2.4-2.5-3.6-5.4-3.6-8.5s1.2-6 3.6-8.5Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "heart",
+				zh: "心形",
+				en: "Heart",
+				body:
+					'<path d="M12 20.5C7.06 17.14 4 14.06 4 10.58a4.55 4.55 0 0 1 8-3.14 4.55 4.55 0 0 1 8 3.14c0 3.48-3.06 6.56-8 9.92Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "star",
+				zh: "星形",
+				en: "Star",
+				body:
+					'<path d="m12 3.2 2.72 5.7 6.08.86-4.44 4.33 1.08 6.13L12 17.32l-5.44 2.9 1.08-6.13L3.2 9.76l6.08-.86Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "book",
+				zh: "书本",
+				en: "Book",
+				body:
+					'<path d="M4.5 4.5h4.6A2.9 2.9 0 0 1 12 7.4v13a2.9 2.9 0 0 0-2.9-2.9H4.5Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M19.5 4.5h-4.6A2.9 2.9 0 0 0 12 7.4v13a2.9 2.9 0 0 1 2.9-2.9h4.6Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "chart",
+				zh: "图表",
+				en: "Chart",
+				body:
+					'<path d="M3.5 20.5h17" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<rect x="6" y="12" width="3.5" height="8.5" rx="1" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<rect x="11.25" y="9" width="3.5" height="11.5" rx="1" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<rect x="16.5" y="5.5" width="3.5" height="15" rx="1" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "chat",
+				zh: "对话",
+				en: "Chat",
+				body:
+					'<path d="M20 6.5A2.5 2.5 0 0 0 17.5 4h-11A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8v4l4.5-4h5a2.5 2.5 0 0 0 2.5-2.5Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "cpu",
+				zh: "芯片",
+				en: "Cpu",
+				body:
+					'<rect x="5.5" y="5.5" width="13" height="13" rx="2.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<rect x="9.5" y="9.5" width="5" height="5" rx="1" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M9 3v2.5M15 3v2.5M9 18.5V21M15 18.5V21M3 9h2.5M3 15h2.5M18.5 9H21M18.5 15H21" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "gear",
+				zh: "齿轮",
+				en: "Gear",
+				body:
+					'<circle cx="12" cy="12" r="6.4" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<circle cx="12" cy="12" r="2.8" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M12 2.4v3.2M12 18.4v3.2M2.4 12h3.2M18.4 12h3.2M5.2 5.2l2.3 2.3M16.5 16.5l2.3 2.3M18.8 5.2l-2.3 2.3M7.5 16.5l-2.3 2.3" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "home",
+				zh: "首页",
+				en: "Home",
+				body:
+					'<path d="M3.5 10.8 12 3.5l8.5 7.3" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M6 9.2V19a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 18 19V9.2" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M9.5 20.5v-6h5v6" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "image",
+				zh: "图片",
+				en: "Image",
+				body:
+					'<rect x="3.5" y="4.5" width="17" height="15" rx="2.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<circle cx="8.6" cy="9.6" r="1.6" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="m4.5 17.5 4.7-4.7 3.1 3.1 2.9-2.9 4.3 4.3" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "key",
+				zh: "钥匙",
+				en: "Key",
+				body:
+					'<circle cx="7.5" cy="12" r="4" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M11.5 12H21M17.5 12v3M21 12v2.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "link",
+				zh: "链接",
+				en: "Link",
+				body:
+					'<rect x="2.5" y="7.5" width="10" height="9" rx="4.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<rect x="11.5" y="7.5" width="10" height="9" rx="4.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "mail",
+				zh: "邮件",
+				en: "Mail",
+				body:
+					'<rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="m4.2 7.2 7.8 5.9 7.8-5.9" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "map",
+				zh: "地图",
+				en: "Map",
+				body:
+					'<path d="m9 4.5 6 2.5 5.5-2v14l-5.5 2-6-2.5-5.5 2v-14Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M9 4.5v14M15 7v14" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "music",
+				zh: "音乐",
+				en: "Music",
+				body:
+					'<path d="M9 5.5 19 4" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<path d="M9 5.5v11.2M19 4v11.2" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<circle cx="6.5" cy="17.5" r="2.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+					'<circle cx="16.5" cy="16" r="2.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "zap",
+				zh: "闪电",
+				en: "Zap",
+				body:
+					'<path d="M13.5 2.5 4.5 14H11l-.5 7.5L19.5 10H13Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			},
+			{
+				id: "shield",
+				zh: "盾牌",
+				en: "Shield",
+				body:
+					'<path d="M12 3 4.5 5.8v5.7c0 4.3 3.1 7.6 7.5 9 4.4-1.4 7.5-4.7 7.5-9V5.8Z" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+			}
+		];
+		const ICON_BY_ID = new Map(ICONS.map((entry) => [entry.id, entry]));
+
+		/* Icon picker geometry: six 36px cells per row (four rows for 24 icons). */
+		const ICON_COLUMNS = 6;
+		const ICON_CELL_SIZE = 36;
+		const ICON_CELL_GAP = 6;
+		const ICON_GRID_ROWS = Math.ceil(ICONS.length / ICON_COLUMNS);
+		/* 6 cells + 5 gaps, plus the card's 4px padding each side and its 0.5px border. */
+		const ICON_PALETTE_WIDTH = ICON_COLUMNS * ICON_CELL_SIZE + (ICON_COLUMNS - 1) * ICON_CELL_GAP + 8 + 1;
+		const ICON_PALETTE_HEIGHT = ICON_GRID_ROWS * ICON_CELL_SIZE + (ICON_GRID_ROWS - 1) * ICON_CELL_GAP + 8 + 7 + 34;
+		const COLOR_PALETTE_HEIGHT = (PALETTE.length + 2) * 32 + 16;
+
+		/**
 		 * The page's language. The document hint is only the starting guess: the
 		 * desktop launch flag can disagree with the product UI, so `apply` asks the
 		 * client locale service and this flag flips once, before anything renders.
@@ -55,13 +278,17 @@
 
 		const L_ZH = {
 			changeColor: "更改颜色",
+			changeIcon: "更改图标",
 			clear: "默认颜色",
+			iconClear: "默认图标（#）",
 			paletteLabel: "工作区颜色",
 			on: "当前颜色"
 		};
 		const L_EN = {
 			changeColor: "Change colour",
+			changeIcon: "Change icon",
 			clear: "Default colour",
+			iconClear: "Default icon (#)",
 			paletteLabel: "Workspace colour",
 			on: "Current colour"
 		};
@@ -76,6 +303,7 @@
 			}
 		);
 
+		/** Localized name of a catalogue entry (colours and icons share the shape). */
 		const colourLabel = (entry) => (zhActive ? entry.zh : entry.en);
 
 		/** Resolve the UI language from the client locale, falling back to the page hint. */
@@ -102,7 +330,9 @@
 		const store = {
 			/** @type {Record<string, string>} row key → colour id */
 			colors: loadColors(),
-			/** @type {{rowKey: string, token: number, rect: DOMRect} | null} */
+			/** @type {Record<string, string>} row key → icon id */
+			icons: loadIcons(),
+			/** @type {{rowKey: string, mode: "color" | "icon", token: number, rect: DOMRect} | null} */
 			palette: null,
 			listeners: new Set(),
 			subscribe(listener) {
@@ -140,13 +370,47 @@
 			}
 		}
 
+		function loadIcons() {
+			try {
+				const raw = localStorage.getItem(ICON_STORAGE_KEY);
+				if (raw === null) return {};
+				const parsed = JSON.parse(raw);
+				if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+				const clean = {};
+				for (const [key, value] of Object.entries(parsed)) {
+					if (typeof key === "string" && typeof value === "string" && ICON_BY_ID.has(value)) clean[key] = value;
+				}
+				return clean;
+			} catch {
+				return {};
+			}
+		}
+
+		function saveIcons() {
+			try {
+				localStorage.setItem(ICON_STORAGE_KEY, JSON.stringify(store.icons));
+			} catch {
+				/* A blocked storage only costs persistence, never the feature. */
+			}
+		}
+
 		function setColor(rowKey, colorId) {
 			if (typeof rowKey !== "string" || rowKey === "") return;
 			if (colorId === null || colorId === void 0) delete store.colors[rowKey];
 			else if (PALETTE_BY_ID.has(colorId)) store.colors[rowKey] = colorId;
 			else return;
 			saveColors();
-			applyRowColors();
+			applyRowMarks();
+			store.emit();
+		}
+
+		function setIcon(rowKey, iconId) {
+			if (typeof rowKey !== "string" || rowKey === "") return;
+			if (iconId === null || iconId === void 0) delete store.icons[rowKey];
+			else if (ICON_BY_ID.has(iconId)) store.icons[rowKey] = iconId;
+			else return;
+			saveIcons();
+			applyRowMarks();
 			store.emit();
 		}
 
@@ -154,7 +418,7 @@
 		 * Painting the sidebar rows
 		 * ──────────────────────────────────────────────────────────────────── */
 
-		function applyRowColors() {
+		function applyRowMarks() {
 			const rows = document.querySelectorAll(ROW_SELECTOR);
 			for (const row of rows) {
 				const key = row.getAttribute("data-row-key");
@@ -163,6 +427,15 @@
 					if (row.getAttribute(ROW_ATTR) !== colorId) row.setAttribute(ROW_ATTR, colorId);
 				} else if (row.hasAttribute(ROW_ATTR)) {
 					row.removeAttribute(ROW_ATTR);
+				}
+				/* The icon rides the colour chip: its CSS rule only repaints the
+				 * chip's glyph, so on a row without a colour it stays inert and the
+				 * shipped folder/chevron slot is untouched. */
+				const iconId = key === null ? void 0 : store.icons[key];
+				if (iconId !== void 0 && ICON_BY_ID.has(iconId)) {
+					if (row.getAttribute(ICON_ATTR) !== iconId) row.setAttribute(ICON_ATTR, iconId);
+				} else if (row.hasAttribute(ICON_ATTR)) {
+					row.removeAttribute(ICON_ATTR);
 				}
 			}
 			applyRowRails();
@@ -236,6 +509,18 @@
 			'<circle cx="10.7" cy="6.4" r=".85" fill="currentColor"/>' +
 			"</svg>";
 
+		/*
+		 * The "更改图标" row's glyph: a little catalogue of shapes, so the two
+		 * spliced rows read as two different pickers even before their labels.
+		 */
+		const ICON_ICON =
+			'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">' +
+			'<rect x="1.8" y="1.8" width="5.4" height="5.4" rx="1.3" stroke="currentColor" stroke-width="1.2"/>' +
+			'<circle cx="12.2" cy="4.5" r="2.6" stroke="currentColor" stroke-width="1.2"/>' +
+			'<path d="M4.5 9.6 7.4 14.5H1.6Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>' +
+			'<path d="M12.2 9.6 15 12.3l-2.8 2.7-2.8-2.7Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>' +
+			"</svg>";
+
 		/** The last visible `role="menu"` portal — the one that just opened. */
 		function findOpenMenu() {
 			const menus = document.querySelectorAll('div[role="menu"]');
@@ -248,52 +533,64 @@
 		}
 
 		/**
-		 * Splice the colour row into an open workspace menu.
-		 * @returns whether the menu now carries the row (idempotent).
+		 * Splice the two workspace marks rows into an open workspace menu: 更改颜色
+		 * first, then 更改图标. The menu DOM is re-created on every open, so the
+		 * presence check is per-attribute: a re-render can mount the same portal
+		 * again without duplicating either row.
+		 * @returns whether the menu now carries both rows (idempotent).
 		 */
 		function injectMenuRow(menu, rowKey, row) {
 			const viewport = menu.querySelector(':scope > div[role="presentation"]');
 			if (viewport === null) return false;
-			if (viewport.querySelector("[" + MENU_ITEM_ATTR + "]") !== null) return true;
 
-			const wrap = document.createElement("div");
-			wrap.setAttribute(MENU_ITEM_ATTR, "");
-			wrap.className = "dsh-wsc-mi-wrap";
+			const append = (attr, icon, label, mode) => {
+				if (viewport.querySelector("[" + attr + "]") !== null) return;
+				const wrap = document.createElement("div");
+				wrap.setAttribute(attr, "");
+				wrap.className = "dsh-wsc-mi-wrap";
 
-			const button = document.createElement("button");
-			button.type = "button";
-			button.setAttribute("role", "menuitem");
-			button.className = "dsh-wsc-mi";
-			button.innerHTML =
-				'<span class="dsh-wsc-mi-icon">' +
-				ITEM_ICON +
-				'</span><span class="dsh-wsc-mi-label"></span><span class="dsh-wsc-mi-arrow">›</span>';
-			const label = button.querySelector(".dsh-wsc-mi-label");
-			if (label !== null) label.textContent = L.changeColor;
+				const button = document.createElement("button");
+				button.type = "button";
+				button.setAttribute("role", "menuitem");
+				button.className = "dsh-wsc-mi";
+				button.innerHTML =
+					'<span class="dsh-wsc-mi-icon">' +
+					icon +
+					'</span><span class="dsh-wsc-mi-label"></span><span class="dsh-wsc-mi-arrow">›</span>';
+				const labelNode = button.querySelector(".dsh-wsc-mi-label");
+				if (labelNode !== null) labelNode.textContent = label;
 
-			/* A native listener, so stopping propagation keeps React's menu
-			 * bookkeeping (focus return, arrow walk) out of this row; the menu
-			 * closes on its own pointer-leave grace once the palette is used. */
-			button.addEventListener("click", (event) => {
-				event.preventDefault();
-				event.stopPropagation();
-				openPalette(rowKey, row);
-			});
+				/* A native listener, so stopping propagation keeps React's menu
+				 * bookkeeping (focus return, arrow walk) out of this row; the menu
+				 * closes on its own pointer-leave grace once the palette is used. */
+				button.addEventListener("click", (event) => {
+					event.preventDefault();
+					event.stopPropagation();
+					openPalette(rowKey, row, mode);
+				});
 
-			wrap.appendChild(button);
-			viewport.appendChild(wrap);
-			return true;
+				wrap.appendChild(button);
+				viewport.appendChild(wrap);
+			};
+
+			append(MENU_ITEM_ATTR, ITEM_ICON, L.changeColor, "color");
+			append(MENU_ICON_ITEM_ATTR, ICON_ICON, L.changeIcon, "icon");
+			return (
+				viewport.querySelector("[" + MENU_ITEM_ATTR + "]") !== null &&
+				viewport.querySelector("[" + MENU_ICON_ITEM_ATTR + "]") !== null
+			);
 		}
 
 		/* ────────────────────────────────────────────────────────────────────
 		 * Palette (a `shell.overlay` occupant — real React, real floating layer)
 		 * ──────────────────────────────────────────────────────────────────── */
 
-		function openPalette(rowKey, row) {
+		function openPalette(rowKey, row, mode = "color") {
 			const element = row instanceof Element ? row : document.querySelector('[data-row-key="' + rowKey + '"]');
 			const rect = element === null ? null : element.getBoundingClientRect();
 			store.palette = {
 				rowKey,
+				mode: mode === "icon" ? "icon" : "color",
 				token: (store.palette === null ? 0 : store.palette.token) + 1,
 				rect: rect === null ? { left: 16, top: 16, bottom: 32, right: 160 } : { left: rect.left, top: rect.top, bottom: rect.bottom, right: rect.right }
 			};
@@ -312,15 +609,19 @@
 			return tick;
 		}
 
-		function palettePosition(rect) {
-			/* Row 32px high, plus the separator and the clear row; a ten-colour
-			 * palette can outgrow a small window, so the card scrolls inside it. */
-			const height = Math.min((PALETTE.length + 2) * 32 + 16, Math.max(0, window.innerHeight - 2 * VIEWPORT_MARGIN));
+		/**
+		 * Clamp the palette card into the window.
+		 * @param rect - the annotated row's viewport rect.
+		 * @param width - the card width for the mode being shown.
+		 * @param estimate - its natural height, before the window cap.
+		 */
+		function palettePosition(rect, width, estimate) {
+			const height = Math.min(estimate, Math.max(0, window.innerHeight - 2 * VIEWPORT_MARGIN));
 			const vw = window.innerWidth;
 			const vh = window.innerHeight;
 			let left = rect.left;
 			let top = rect.bottom + 4;
-			left = Math.min(Math.max(left, VIEWPORT_MARGIN), Math.max(VIEWPORT_MARGIN, vw - PALETTE_WIDTH - VIEWPORT_MARGIN));
+			left = Math.min(Math.max(left, VIEWPORT_MARGIN), Math.max(VIEWPORT_MARGIN, vw - width - VIEWPORT_MARGIN));
 			if (top + height > vh - VIEWPORT_MARGIN) top = Math.max(VIEWPORT_MARGIN, rect.top - height - 4);
 			if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
 			return { left, top };
@@ -356,48 +657,107 @@
 			}, [token]);
 
 			if (open === null) return null;
-			const position = palettePosition(open.rect);
-			const selected = store.colors[open.rowKey];
+			const iconMode = open.mode === "icon";
+			const width = iconMode ? ICON_PALETTE_WIDTH : PALETTE_WIDTH;
+			const position = palettePosition(open.rect, width, iconMode ? ICON_PALETTE_HEIGHT : COLOR_PALETTE_HEIGHT);
 
-			const rows = PALETTE.map((entry) =>
-				h(
-					"button",
-					{
-						key: entry.id,
-						type: "button",
-						role: "menuitem",
-						className: "dsh-wsc-row" + (selected === entry.id ? " dsh-wsc-row-current" : ""),
-						"aria-label": colourLabel(entry),
-						onClick: () => {
-							setColor(open.rowKey, entry.id);
-							closePalette();
-						}
-					},
-					h("span", { className: "dsh-wsc-dot", style: { background: entry.color } }),
-					h("span", { className: "dsh-wsc-name" }, colourLabel(entry)),
-					selected === entry.id ? h("span", { className: "dsh-wsc-check" }, "✓") : null
-				)
-			);
-
-			if (selected !== void 0) {
-				rows.push(h("div", { key: "separator", className: "dsh-wsc-sep" }));
-				rows.push(
+			let content;
+			if (iconMode) {
+				const selectedIcon = store.icons[open.rowKey];
+				content = [
+					h(
+						"div",
+						{ key: "icon-grid", className: "dsh-wsc-icon-grid" },
+						ICONS.map((entry) =>
+							h(
+								"button",
+								{
+									key: entry.id,
+									type: "button",
+									role: "menuitem",
+									className: "dsh-wsc-icon-cell",
+									title: colourLabel(entry),
+									"aria-label": colourLabel(entry),
+									"data-current": selectedIcon === entry.id ? "true" : void 0,
+									onClick: () => {
+										setIcon(open.rowKey, entry.id);
+										closePalette();
+									}
+								},
+								h("svg", {
+									viewBox: "0 0 24 24",
+									width: 18,
+									height: 18,
+									fill: "none",
+									stroke: "currentColor",
+									strokeWidth: 2,
+									strokeLinecap: "round",
+									strokeLinejoin: "round",
+									"aria-hidden": "true",
+									dangerouslySetInnerHTML: { __html: entry.body }
+								})
+							)
+						)
+					),
+					h("div", { key: "icon-separator", className: "dsh-wsc-sep" }),
 					h(
 						"button",
 						{
-							key: "clear",
+							key: "icon-clear",
 							type: "button",
 							role: "menuitem",
 							className: "dsh-wsc-row dsh-wsc-row-clear",
 							onClick: () => {
-								setColor(open.rowKey, null);
+								setIcon(open.rowKey, null);
 								closePalette();
 							}
 						},
 						h("span", { className: "dsh-wsc-dot dsh-wsc-dot-empty" }),
-						h("span", { className: "dsh-wsc-name" }, L.clear)
+						h("span", { className: "dsh-wsc-name" }, L.iconClear)
+					)
+				];
+			} else {
+				const selected = store.colors[open.rowKey];
+				content = PALETTE.map((entry) =>
+					h(
+						"button",
+						{
+							key: entry.id,
+							type: "button",
+							role: "menuitem",
+							className: "dsh-wsc-row" + (selected === entry.id ? " dsh-wsc-row-current" : ""),
+							"aria-label": colourLabel(entry),
+							onClick: () => {
+								setColor(open.rowKey, entry.id);
+								closePalette();
+							}
+						},
+						h("span", { className: "dsh-wsc-dot", style: { background: entry.color } }),
+						h("span", { className: "dsh-wsc-name" }, colourLabel(entry)),
+						selected === entry.id ? h("span", { className: "dsh-wsc-check" }, "✓") : null
 					)
 				);
+
+				if (selected !== void 0) {
+					content.push(h("div", { key: "separator", className: "dsh-wsc-sep" }));
+					content.push(
+						h(
+							"button",
+							{
+								key: "clear",
+								type: "button",
+								role: "menuitem",
+								className: "dsh-wsc-row dsh-wsc-row-clear",
+								onClick: () => {
+									setColor(open.rowKey, null);
+									closePalette();
+								}
+							},
+							h("span", { className: "dsh-wsc-dot dsh-wsc-dot-empty" }),
+							h("span", { className: "dsh-wsc-name" }, L.clear)
+						)
+					);
+				}
 			}
 
 			return h(
@@ -407,9 +767,9 @@
 					className: "dsh-wsc-palette",
 					role: "menu",
 					"aria-label": L.paletteLabel,
-					style: { left: position.left + "px", top: position.top + "px", width: PALETTE_WIDTH + "px" }
+					style: { left: position.left + "px", top: position.top + "px", width: width + "px" }
 				},
-				rows
+				content
 			);
 		}
 
@@ -421,6 +781,37 @@
 			(entry) => '[data-row-key^="workspace:"][' + ROW_ATTR + '="' + entry.id + '"]{--dsh-wsc-color:' + entry.color + "}"
 		).join("");
 
+		/** The root of the data-URI each icon paints into the chip. */
+		const ICON_SVG_OPEN =
+			'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="rgba(0,0,0,0.74)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
+
+		/**
+		 * A row badge's icon as a CSS data URI. `encodeURIComponent` encodes the
+		 * `#` as %23 and the double quotes as %22, so the result drops straight
+		 * inside `url("…")` without closing the CSS string or a fragment colour.
+		 */
+		function iconDataUri(entry) {
+			return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(ICON_SVG_OPEN + entry.body + "</svg>");
+		}
+
+		/*
+		 * One override per icon, appended after COLOR_RULES so its longhands
+		 * (background-image/size/position) beat the badge rule's `background`
+		 * shorthand: the coloured circle survives and only the glyph changes.
+		 * `content:''` drops the default `#`.
+		 */
+		const ICON_RULES = ICONS.map(
+			(entry) =>
+				ROW_SELECTOR +
+				"[" +
+				ICON_ATTR +
+				'="' +
+				entry.id +
+				'"]>span:nth-child(1)::before{content:\'\';background-image:url("' +
+				iconDataUri(entry) +
+				'");background-size:10px 10px;background-position:center;background-repeat:no-repeat}'
+		).join("");
+
 		/*
 		 * The row's leading cell is a 16x20 icon slot: at rest it holds the folder
 		 * glyph, on hover the shipped CSS swaps in the expand chevron. A coloured row
@@ -430,7 +821,9 @@
 		 * Column order in the shipped markup: 1 = folder, 2 = chevron,
 		 * 3 = title (projectText), 4 = row actions.
 		 */
-		const CHIP = '[data-row-key^="workspace:"][' + ROW_ATTR + "]";
+		/* A row shows a mark when it has a colour **or** an icon: the icon picker
+		 * must work on uncoloured workspaces too, hence the `:is()` list. */
+		const CHIP = '[data-row-key^="workspace:"]:is([' + ROW_ATTR + '],[' + ICON_ATTR + '])';
 
 		/*
 		 * The session rail. `--dsh-wsc-color` is re-declared per colour on the
@@ -473,8 +866,9 @@
 			/* 70% of the palette colour: the badge still reads as the colour itself
 			 * rather than a pale wash, without the full-saturation weight. A fixed
 			 * dark ink keeps the glyph legible on every entry in both themes. */
-			"background:color-mix(in srgb,var(--dsh-wsc-color) 70%,transparent);color:rgba(0,0,0,.74)}" +
+			"background:color-mix(in srgb,var(--dsh-wsc-color,#9AA0A6) 70%,transparent);color:rgba(0,0,0,.74)}" +
 			COLOR_RULES +
+			ICON_RULES +
 			RAIL_CSS +
 			/* Palette card (ported from the menu surface's own tokens). */
 			".dsh-wsc-palette{position:fixed;z-index:1300;box-sizing:border-box;padding:4px;display:flex;flex-direction:column;pointer-events:auto;" +
@@ -491,6 +885,13 @@
 			".dsh-wsc-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
 			".dsh-wsc-check{flex:none;font-size:12px;line-height:1;color:var(--dsw-alias-label-tertiary,#8a8a8a)}" +
 			".dsh-wsc-sep{height:.5px;margin:3px 2px;background:var(--dsw-alias-border-l2,rgba(0,0,0,.08))}" +
+			/* Icon picker: 6x4 cells, matching the card width computed above. */
+			".dsh-wsc-icon-grid{display:grid;grid-template-columns:repeat(6,36px);gap:6px;justify-content:center;padding:4px 0}" +
+			".dsh-wsc-icon-cell{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:0;border-radius:var(--dsw-radius-md,8px);" +
+			"background:transparent;color:var(--dsw-alias-label-primary,#1f1f1f);cursor:pointer;font-family:inherit}" +
+			".dsh-wsc-icon-cell:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}" +
+			".dsh-wsc-icon-cell:focus-visible{outline:none;background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}" +
+			'.dsh-wsc-icon-cell[data-current="true"]{box-shadow:inset 0 0 0 1.5px var(--dsw-alias-brand-primary,#4C9BFF)}' +
 			/* The spliced menu row mirrors the shipped menu cell. */
 			".dsh-wsc-mi-wrap{position:relative}" +
 			".dsh-wsc-mi{display:flex;align-items:center;gap:6px;width:100%;min-height:34px;padding:6px 8px;border:0;border-radius:var(--dsw-radius-md,8px);" +
@@ -532,7 +933,7 @@
 			};
 
 			const service = () => {
-				applyRowColors();
+				applyRowMarks();
 				const now = Date.now();
 				for (const [row, info] of Array.from(candidates)) {
 					if (now - info.at > 4000 || !row.isConnected) {
@@ -577,7 +978,7 @@
 			observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
 			document.addEventListener("pointerdown", onPointerDown, true);
 			document.addEventListener("contextmenu", onContextMenu, true);
-			applyRowColors();
+			applyRowMarks();
 
 			return () => {
 				observer.disconnect();
@@ -585,6 +986,7 @@
 				document.removeEventListener("contextmenu", onContextMenu, true);
 				candidates.clear();
 				for (const row of document.querySelectorAll("[" + ROW_ATTR + "]")) row.removeAttribute(ROW_ATTR);
+				for (const row of document.querySelectorAll("[" + ICON_ATTR + "]")) row.removeAttribute(ICON_ATTR);
 				for (const host of document.querySelectorAll("[" + RAIL_ATTR + "]")) host.removeAttribute(RAIL_ATTR);
 			};
 		}
@@ -631,10 +1033,14 @@
 			const api = {
 				id: PLUGIN_ID,
 				colors: PALETTE.map((entry) => entry.id),
+				icons: ICONS.map((entry) => entry.id),
 				get: (rowKey) => store.colors[rowKey] ?? null,
 				set: (rowKey, colorId) => setColor(rowKey, colorId),
 				clear: (rowKey) => setColor(rowKey, null),
-				all: () => Object.assign({}, store.colors)
+				getIcon: (rowKey) => store.icons[rowKey] ?? null,
+				setIcon: (rowKey, iconId) => setIcon(rowKey, iconId),
+				/* Both preference maps; each keyed by workspace row key. */
+				all: () => ({ colors: Object.assign({}, store.colors), icons: Object.assign({}, store.icons) })
 			};
 			window.__DSH_WORKSPACE_COLORS__ = api;
 			return () => {
