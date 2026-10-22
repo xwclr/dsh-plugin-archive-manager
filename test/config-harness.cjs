@@ -15,7 +15,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createRequire } = require('node:module');
 const { pathToFileURL } = require('node:url');
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'archive-manager-config-'));
@@ -78,17 +77,16 @@ function fakeContext() {
 
 		/* ── schema ───────────────────────────────────────────────────── */
 
-		check('the plugin exports a Config schema', plugin.Config !== void 0 && typeof plugin.Config.parse === 'function');
-		const defaults = plugin.Config.parse({});
+		check('the plugin exports a Config schema', plugin.Config !== void 0 && typeof plugin.Config === 'function');
+		const defaults = plugin.Config({});
 		check('every feature defaults to on', defaults.archive === true && defaults.skills === true && defaults.colors === true, JSON.stringify(defaults));
-		const off = plugin.Config.parse({ skills: false });
+		const off = plugin.Config({ skills: false });
 		check('the schema keeps one feature off', off.skills === false && off.archive === true && off.colors === true);
-		const zod = createRequire(process.env.DSH_TEST_MODULE_ROOT)('zod');
-		const schema = zod.toJSONSchema(plugin.Config);
+		const dict = plugin.Config.dict ?? {};
 		check(
-			'the projected schema documents the three switches',
-			['archive', 'skills', 'colors'].every((key) => schema.properties !== void 0 && schema.properties[key] !== void 0 && typeof schema.properties[key].description === 'string'),
-			JSON.stringify(Object.keys(schema.properties ?? {}))
+			'the schema documents the three switches',
+			['archive', 'skills', 'colors'].every((key) => dict[key] !== void 0 && dict[key].meta !== void 0 && typeof dict[key].meta.description === 'string'),
+			JSON.stringify(Object.keys(dict))
 		);
 
 		/* ── default row: everything on ───────────────────────────────── */
