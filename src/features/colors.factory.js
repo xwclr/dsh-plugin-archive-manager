@@ -925,18 +925,7 @@
 			".dsh-wsc-mi:focus-visible{outline:none;background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}" +
 			".dsh-wsc-mi-icon{flex:none;display:inline-flex;width:14px;height:14px;align-items:center;justify-content:center;color:var(--dsw-alias-menu-icon,currentColor)}" +
 			".dsh-wsc-mi-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-			".dsh-wsc-mi-arrow{flex:none;font-size:14px;line-height:1;opacity:.55}" +
-			/* ── Typography polish for the workspace tree ──────────────────────
-			 * The project row carries the hierarchy: its title is a touch heavier and
-			 * tighter than a session title, which stays regular so a long list reads as
-			 * content rather than as another level of navigation. The selection tint is
-			 * the one place the brand colour appears, so a coloured workspace keeps its
-			 * own hue on the rail while the current row reads as "here". */
-			'[data-row-key^="workspace:"] [class*="_title"]{font-weight:600;letter-spacing:.01em}' +
-			'[data-row-key^="session:"] [class*="_title"]{font-weight:400;font-size:13px}' +
-			'[data-row-key^="session:"]:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent)}' +
-			'[data-row-key^="session:"][class*="_selected"]{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 9%,transparent)}' +
-			'[data-row-key^="workspace:"][data-dsh-wsc]>span:nth-child(1)::before{box-shadow:inset 0 0 0 .5px rgba(0,0,0,.08)}';
+			".dsh-wsc-mi-arrow{flex:none;font-size:14px;line-height:1;opacity:.55}";
 
 		/** Insert this package's stylesheet; the returned disposer removes it. */
 		function insertStyles() {
