@@ -1085,8 +1085,26 @@ async function main() {
 		assert.ok(result.injected.includes('settings.section'), 'the archive page still activates');
 	});
 
-	test('a disabled colors feature registers no palette', () => {
-		const result = applyWithFlags({ colors: false });
+	test('a disabled colour half leaves the icon half working', () => {
+		applyWithFlags({ colors: false });
+		const api = sandbox.__DSH_WORKSPACE_COLORS__;
+		assert.ok(api !== void 0, 'the module still applies for icons');
+		assert.equal(api.features.colors, false);
+		assert.equal(api.features.icons, true);
+		assert.equal(api.colors.length, 0, 'no colour catalogue');
+		assert.equal(api.icons.length, 24, 'the icon catalogue stays');
+	});
+
+	test('a disabled icon half leaves the colour half working', () => {
+		applyWithFlags({ icons: false });
+		const api = sandbox.__DSH_WORKSPACE_COLORS__;
+		assert.equal(api.features.icons, false);
+		assert.equal(api.icons.length, 0, 'no icon catalogue');
+		assert.equal(api.colors.length, 10, 'the colour catalogue stays');
+	});
+
+	test('both mark halves off skip the whole colors module', () => {
+		const result = applyWithFlags({ colors: false, icons: false });
 		assert.ok(!result.registrations.some((entry) => entry.options.id === 'workspace-colors.palette'));
 		assert.ok(
 			result.registrations.some((entry) => entry.options.id === 'archive-manager.delete-dialog'),
@@ -1095,8 +1113,8 @@ async function main() {
 	});
 
 	test('disabling every feature registers nothing at all', () => {
-		const result = applyWithFlags({ archive: false, skills: false, colors: false });
-		assert.equal(result.registrations.length, 1, 'only the feature switch page remains');
+		const result = applyWithFlags({ archive: false, skills: false, colors: false, icons: false });
+		assert.equal(result.registrations.length, 1, 'only the feature switch page remains: ' + JSON.stringify(result.registrations.map((entry) => entry.options.id)));
 		assert.equal(result.registrations[0].options.id, 'archive-manager.features');
 		assert.deepEqual(result.injected, ['settings.section']);
 	});
@@ -1109,7 +1127,7 @@ async function main() {
 		assert.match(text, /技能管理/u);
 		assert.match(text, /工作区配色/u);
 		const switches = findAll(tree, (node) => node.kind === 'host' && node.props && node.props.role === 'switch');
-		assert.equal(switches.length, 3, 'one switch per feature');
+		assert.equal(switches.length, 4, 'one switch per feature');
 		switches[1].props.onClick();
 		await runtime.flush();
 		assert.match(textOf(runtime.getTree()), /刷新页面后生效/u, 'the change asks for a reload');

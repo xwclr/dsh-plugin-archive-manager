@@ -79,13 +79,13 @@ function fakeContext() {
 
 		check('the plugin exports a Config schema', plugin.Config !== void 0 && typeof plugin.Config === 'function');
 		const defaults = plugin.Config({});
-		check('every feature defaults to on', defaults.archive === true && defaults.skills === true && defaults.colors === true, JSON.stringify(defaults));
+		check('every feature defaults to on', defaults.archive === true && defaults.skills === true && defaults.colors === true && defaults.icons === true, JSON.stringify(defaults));
 		const off = plugin.Config({ skills: false });
-		check('the schema keeps one feature off', off.skills === false && off.archive === true && off.colors === true);
+		check('the schema keeps one feature off', off.skills === false && off.archive === true && off.colors === true && off.icons === true);
 		const dict = plugin.Config.dict ?? {};
 		check(
 			'the schema documents the three switches',
-			['archive', 'skills', 'colors'].every((key) => dict[key] !== void 0 && dict[key].meta !== void 0 && typeof dict[key].meta.description === 'string'),
+			['archive', 'skills', 'colors', 'icons'].every((key) => dict[key] !== void 0 && dict[key].meta !== void 0 && typeof dict[key].meta.description === 'string'),
 			JSON.stringify(Object.keys(dict))
 		);
 
@@ -119,7 +119,7 @@ function fakeContext() {
 		);
 
 		const none = fakeContext();
-		plugin.apply(none, { archive: false, skills: false, colors: false });
+		plugin.apply(none, { archive: false, skills: false, colors: false, icons: false });
 		check('disabling every feature mounts no route', none.routes.length === 0, String(none.routes.length));
 		check('the index tap is still installed for the browser half', none.taps.length === 1);
 
@@ -136,7 +136,7 @@ function fakeContext() {
 			} catch {
 				flags = null;
 			}
-			check('the injected flags round-trip', flags !== null && flags.archive === false && flags.skills === false && flags.colors === false, String(match[1]));
+			check('the injected flags round-trip', flags !== null && flags.archive === false && flags.skills === false && flags.colors === false && flags.icons === false, String(match[1]));
 		}
 		check('the injection lands inside <head>', injected.indexOf('__DSH_ARCHIVE_MANAGER_FEATURES__') < injected.indexOf('</head>'));
 
@@ -144,6 +144,10 @@ function fakeContext() {
 		plugin.apply(partial, { colors: false });
 		const partialHtml = partial.taps[0](html);
 		check('a single switch off is published verbatim', partialHtml.includes('"colors":false') && partialHtml.includes('"skills":true'));
+
+		const iconOnly = fakeContext();
+		plugin.apply(iconOnly, { colors: false });
+		check('colours and icons are independent switches', iconOnly.taps[0](html).includes('"colors":false') && iconOnly.taps[0](html).includes('"icons":true'));
 
 		console.log(`\n${failures.length === 0 ? 'ok' : 'not ok'}: ${passed} checks passed${failures.length === 0 ? '' : `, ${failures.length} failed`}`);
 		process.exitCode = failures.length === 0 ? 0 : 1;

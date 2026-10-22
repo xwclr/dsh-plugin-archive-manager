@@ -78,13 +78,15 @@
 	const STRINGS = {
 		zh: {
 			nav: '插件功能',
-			intro: '这三个功能装在同一个插件里，可以分别开关。开关保存在本机，与插件的 config 同时生效——刷新页面后按新开关重新注册。',
+			intro: '这些功能装在同一个插件里，可以分别开关。开关保存在本机，与插件的 config 同时生效——刷新页面后按新开关重新注册。',
 			archive: '归档会话',
 			archiveHint: '「设置 → 归档会话」页：按项目管理已归档会话，以及会话「…」菜单里的「删除会话」。',
 			skills: '技能管理',
 			skillsHint: '侧边栏「技能」页：导入、启用/停用、删除技能。',
 			colors: '工作区配色',
-			colorsHint: '工作区图标颜色、同色竖线，以及图标替换。',
+			colorsHint: '工作区的颜色：彩色 # 徽标、颜色调色板与同色会话竖线。',
+			icons: '工作区图标',
+			iconsHint: '用 24 个内置图标替换工作区的 # 徽标（与颜色互不影响，可单独开启）。',
 			hostOff: '已被插件配置（config）关闭，这里无法开启。',
 			dirty: '开关已保存，刷新页面后生效。',
 			reload: '立即刷新',
@@ -93,13 +95,15 @@
 		},
 		en: {
 			nav: 'Plugin features',
-			intro: 'These three features ship as one plugin and can be switched separately. Choices are stored on this machine and combined with the plugin config; the page reloads them into registration.',
+			intro: 'These features ship as one plugin and can be switched separately. Choices are stored on this machine and combined with the plugin config; the page reloads them into registration.',
 			archive: 'Archived sessions',
 			archiveHint: 'The Settings page that lists archived sessions by project, plus “Delete session” in a session’s “…” menu.',
 			skills: 'Skill manager',
 			skillsHint: 'The sidebar “Skills” page: import, enable/disable and delete skills.',
 			colors: 'Workspace colors',
-			colorsHint: 'Workspace badge colours, the matching session rail, and icon replacement.',
+			colorsHint: 'Workspace colours: the coloured badge, the palette, and the matching session rail.',
+			icons: 'Workspace icons',
+			iconsHint: 'Replace the workspace # badge with one of 24 built-in icons (independent of colours).',
 			hostOff: 'Disabled by the plugin config; it cannot be turned on here.',
 			dirty: 'Saved. Reload the page to apply.',
 			reload: 'Reload now',
@@ -171,7 +175,8 @@
 	const ROWS = [
 		{ key: 'archive', label: () => L.archive, hint: () => L.archiveHint },
 		{ key: 'skills', label: () => L.skills, hint: () => L.skillsHint },
-		{ key: 'colors', label: () => L.colors, hint: () => L.colorsHint }
+		{ key: 'colors', label: () => L.colors, hint: () => L.colorsHint },
+		{ key: 'icons', label: () => L.icons, hint: () => L.iconsHint }
 	];
 
 	/**

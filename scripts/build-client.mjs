@@ -82,14 +82,10 @@ const embed = (name, fragment, comment, args = 'require') => {
 	sections.push('');
 };
 
-embed('__skills', skills, '技能管理 / Skill Manager (src/features/skills.factory.js).');
-embed('__colors', colors, '工作区配色 / Workspace Colors (src/features/colors.factory.js).');
-embed('__archive', archive, '归档会话 / Archive Manager (src/features/archive.factory.js).');
-
 sections.push(`
 		/** Where the user's own feature switches live. */
 		const __PREF_KEY = 'dsh-plugin-archive-manager.features.v1';
-		const __FEATURE_KEYS = ['archive', 'skills', 'colors'];
+		const __FEATURE_KEYS = ['archive', 'skills', 'colors', 'icons'];
 
 		/** Coerce a partial flag object into three booleans; absent means on. */
 		function __normalizeFlags(source) {
@@ -156,13 +152,19 @@ sections.push(`
 		};
 `);
 
+embed('__skills', skills, '技能管理 / Skill Manager (src/features/skills.factory.js).');
+embed('__colors', colors, '工作区配色 / Workspace Colors (src/features/colors.factory.js).', 'require, __featureControls');
+embed('__archive', archive, '归档会话 / Archive Manager (src/features/archive.factory.js).');
+
 embed('__featuresPage', features, '功能开关 / Plugin features (src/features/features.factory.js).', 'require, __featureControls');
 
 sections.push(`
 		const __features = [
-			{ key: 'archive', module: __archive },
-			{ key: 'skills', module: __skills },
-			{ key: 'colors', module: __colors }
+			{ key: 'archive', module: __archive, on: (flags) => flags.archive },
+			{ key: 'skills', module: __skills, on: (flags) => flags.skills },
+			/* One module carries both marks; it runs while either is enabled and
+			 * gates the halves itself. */
+			{ key: 'colors', module: __colors, on: (flags) => flags.colors || flags.icons }
 		];
 
 		/** Services the bundled features need, de-duplicated. */
@@ -178,14 +180,14 @@ sections.push(`
 		 * @param ctx - client root context.
 		 */
 		function apply(ctx) {
-			const flags = __featureControls.effective();
+			const __flags = __featureControls.effective();
 			try {
 				__featuresPage.apply(ctx);
 			} catch (error) {
 				console.error('[archive-manager] the feature switch page failed to activate:', error);
 			}
 			for (const feature of __features) {
-				if (flags[feature.key] === false) {
+				if (feature.on(__flags) === false) {
 					console.info('[archive-manager] feature disabled by config:', feature.key);
 					continue;
 				}

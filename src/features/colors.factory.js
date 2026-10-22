@@ -9,7 +9,7 @@
  * @param require - the module table this plugin's factory received.
  * @returns the feature module: `{ apply, inject, WorkspaceColorPalette }`.
  */
-(require) => {
+(require, options) => {
 		var module = { exports: {} };
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
@@ -17,6 +17,30 @@
 
 		const React = require("react");
 		const h = React.createElement;
+
+		/**
+		 * This feature owns two independent marks: the colour of a workspace row and
+		 * the icon that replaces its `#` glyph. The bundle wrapper passes its live
+		 * switch controller, and `apply` reads the pair once — every later paint
+		 * and click consults the flags below, so one half can never leak in while
+		 * the other is off.
+		 */
+		const OPTIONS = options !== null && typeof options === "object" ? options : {};
+		let COLORS_ON = OPTIONS.colors !== false;
+		let ICONS_ON = OPTIONS.icons !== false;
+
+		/** Re-read the pair from the wrapper's controller (called once, in apply). */
+		function readSwitches() {
+			if (typeof OPTIONS.effective !== "function") return;
+			try {
+				const flags = OPTIONS.effective();
+				if (flags === null || typeof flags !== "object") return;
+				COLORS_ON = flags.colors !== false;
+				ICONS_ON = flags.icons !== false;
+			} catch (error) {
+				/* keep the construction-time defaults */
+			}
+		}
 
 		const PLUGIN_ID = "dsh-plugin-workspace-colors";
 		const STORAGE_KEY = "dsh.workspace-colors.v1";
@@ -422,7 +446,7 @@
 			const rows = document.querySelectorAll(ROW_SELECTOR);
 			for (const row of rows) {
 				const key = row.getAttribute("data-row-key");
-				const colorId = key === null ? void 0 : store.colors[key];
+				const colorId = COLORS_ON && key !== null ? store.colors[key] : void 0;
 				if (colorId !== void 0 && PALETTE_BY_ID.has(colorId)) {
 					if (row.getAttribute(ROW_ATTR) !== colorId) row.setAttribute(ROW_ATTR, colorId);
 				} else if (row.hasAttribute(ROW_ATTR)) {
@@ -431,14 +455,14 @@
 				/* The icon rides the colour chip: its CSS rule only repaints the
 				 * chip's glyph, so on a row without a colour it stays inert and the
 				 * shipped folder/chevron slot is untouched. */
-				const iconId = key === null ? void 0 : store.icons[key];
+				const iconId = ICONS_ON && key !== null ? store.icons[key] : void 0;
 				if (iconId !== void 0 && ICON_BY_ID.has(iconId)) {
 					if (row.getAttribute(ICON_ATTR) !== iconId) row.setAttribute(ICON_ATTR, iconId);
 				} else if (row.hasAttribute(ICON_ATTR)) {
 					row.removeAttribute(ICON_ATTR);
 				}
 			}
-			applyRowRails();
+			if (COLORS_ON) applyRowRails();
 		}
 
 		/**
@@ -573,11 +597,11 @@
 				viewport.appendChild(wrap);
 			};
 
-			append(MENU_ITEM_ATTR, ITEM_ICON, L.changeColor, "color");
-			append(MENU_ICON_ITEM_ATTR, ICON_ICON, L.changeIcon, "icon");
+			if (COLORS_ON) append(MENU_ITEM_ATTR, ITEM_ICON, L.changeColor, "color");
+			if (ICONS_ON) append(MENU_ICON_ITEM_ATTR, ICON_ICON, L.changeIcon, "icon");
 			return (
-				viewport.querySelector("[" + MENU_ITEM_ATTR + "]") !== null &&
-				viewport.querySelector("[" + MENU_ICON_ITEM_ATTR + "]") !== null
+				(!COLORS_ON || viewport.querySelector("[" + MENU_ITEM_ATTR + "]") !== null) &&
+				(!ICONS_ON || viewport.querySelector("[" + MENU_ICON_ITEM_ATTR + "]") !== null)
 			);
 		}
 
@@ -590,7 +614,7 @@
 			const rect = element === null ? null : element.getBoundingClientRect();
 			store.palette = {
 				rowKey,
-				mode: mode === "icon" ? "icon" : "color",
+				mode: mode === "icon" && ICONS_ON ? "icon" : COLORS_ON ? "color" : "icon",
 				token: (store.palette === null ? 0 : store.palette.token) + 1,
 				rect: rect === null ? { left: 16, top: 16, bottom: 32, right: 160 } : { left: rect.left, top: rect.top, bottom: rect.bottom, right: rect.right }
 			};
@@ -658,6 +682,7 @@
 
 			if (open === null) return null;
 			const iconMode = open.mode === "icon";
+			if ((iconMode && !ICONS_ON) || (!iconMode && !COLORS_ON)) return null;
 			const width = iconMode ? ICON_PALETTE_WIDTH : PALETTE_WIDTH;
 			const position = palettePosition(open.rect, width, iconMode ? ICON_PALETTE_HEIGHT : COLOR_PALETTE_HEIGHT);
 
@@ -900,7 +925,18 @@
 			".dsh-wsc-mi:focus-visible{outline:none;background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}" +
 			".dsh-wsc-mi-icon{flex:none;display:inline-flex;width:14px;height:14px;align-items:center;justify-content:center;color:var(--dsw-alias-menu-icon,currentColor)}" +
 			".dsh-wsc-mi-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-			".dsh-wsc-mi-arrow{flex:none;font-size:14px;line-height:1;opacity:.55}";
+			".dsh-wsc-mi-arrow{flex:none;font-size:14px;line-height:1;opacity:.55}" +
+			/* ── Typography polish for the workspace tree ──────────────────────
+			 * The project row carries the hierarchy: its title is a touch heavier and
+			 * tighter than a session title, which stays regular so a long list reads as
+			 * content rather than as another level of navigation. The selection tint is
+			 * the one place the brand colour appears, so a coloured workspace keeps its
+			 * own hue on the rail while the current row reads as "here". */
+			'[data-row-key^="workspace:"] [class*="_title"]{font-weight:600;letter-spacing:.01em}' +
+			'[data-row-key^="session:"] [class*="_title"]{font-weight:400;font-size:13px}' +
+			'[data-row-key^="session:"]:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent)}' +
+			'[data-row-key^="session:"][class*="_selected"]{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 9%,transparent)}' +
+			'[data-row-key^="workspace:"][data-dsh-wsc]>span:nth-child(1)::before{box-shadow:inset 0 0 0 .5px rgba(0,0,0,.08)}';
 
 		/** Insert this package's stylesheet; the returned disposer removes it. */
 		function insertStyles() {
@@ -1004,6 +1040,7 @@
 		 */
 		function apply(ctx) {
 			try {
+				readSwitches();
 				zhActive = detectZh(ctx);
 				ctx.effect(() => insertStyles(), "workspace-colors: stylesheet");
 				ctx.effect(() => startDomDecoration(), "workspace-colors: workspace rows");
@@ -1032,8 +1069,9 @@
 		function exposeDebugApi() {
 			const api = {
 				id: PLUGIN_ID,
-				colors: PALETTE.map((entry) => entry.id),
-				icons: ICONS.map((entry) => entry.id),
+				features: { colors: COLORS_ON, icons: ICONS_ON },
+				colors: COLORS_ON ? PALETTE.map((entry) => entry.id) : [],
+				icons: ICONS_ON ? ICONS.map((entry) => entry.id) : [],
 				get: (rowKey) => store.colors[rowKey] ?? null,
 				set: (rowKey, colorId) => setColor(rowKey, colorId),
 				clear: (rowKey) => setColor(rowKey, null),
