@@ -65,6 +65,13 @@ const header = [
 const sections = [];
 sections.push(header);
 
+/**
+ * Push one feature factory into the bundle: the fragment is a self-contained
+ * `(require) => { ... }` expression returning `{ apply, inject, ...exports }`.
+ * @param name - local binding name.
+ * @param fragment - the factory source.
+ * @param comment - one-line description for the generated file.
+ */
 const embed = (name, fragment, comment) => {
 	sections.push(`\t\t/** ${comment} */`);
 	sections.push(`\t\tconst ${name} = (`);
@@ -77,43 +84,71 @@ embed('__skills', skills, '技能管理 / Skill Manager (src/features/skills.fac
 embed('__colors', colors, '工作区配色 / Workspace Colors (src/features/colors.factory.js).');
 embed('__archive', archive, '归档会话 / Archive Manager (src/features/archive.factory.js).');
 
-sections.push(
-	[
-		'\t\tconst __features = [__skills, __colors, __archive];',
-		'',
-		'\t\t/** Services the three features need, de-duplicated. */',
-		'\t\tconst inject = Array.from(',
-		'\t\t\tnew Set(__features.flatMap((feature) => (Array.isArray(feature.inject) ? feature.inject : [])))',
-		'\t\t);',
-		'',
-		'\t\t/**',
-		'\t\t * Browser plugin body: activate each bundled feature, isolated.',
-		'\t\t * @param ctx - client root context.',
-		'\t\t */',
-		'\t\tfunction apply(ctx) {',
-		'\t\t\tfor (const feature of __features) {',
-		'\t\t\t\ttry {',
-		'\t\t\t\t\tfeature.apply(ctx);',
-		'\t\t\t\t} catch (error) {',
-		"\t\t\t\t\tconsole.error('[archive-manager] a bundled feature failed to activate:', error);",
-		'\t\t\t\t}',
-		'\t\t\t}',
-		'\t\t}',
-		'',
-		'\t\texports.apply = apply;',
-		'\t\texports.inject = inject;',
-		'\t\texports.SkillManagerPage = __skills.SkillManagerPage;',
-		'\t\texports.SkillManagerIcon = __skills.SkillManagerIcon;',
-		'\t\texports.WorkspaceColorPalette = __colors.WorkspaceColorPalette;',
-		'\t\texports.ArchiveManagerPage = __archive.ArchiveManagerPage;',
-		'\t\texports.SessionDeleteMenuItem = __archive.SessionDeleteMenuItem;',
-		'\t\texports.DeleteSessionDialog = __archive.DeleteSessionDialog;',
-		'\t\treturn module.exports;',
-		'\t}',
-		'});',
-		''
-	].join('\n')
-);
+sections.push(`
+		const __features = [
+			{ key: 'archive', module: __archive },
+			{ key: 'skills', module: __skills },
+			{ key: 'colors', module: __colors }
+		];
+
+		/**
+		 * The three switches the Host row declared (the Config schema in lib/index.js).
+		 *
+		 * The Host publishes them through an index injection before the page
+		 * boots; a feature that is off registers nothing. A page without the
+		 * global (an older Host, a cached index) keeps every feature on.
+		 * @returns the resolved flags.
+		 */
+		function __readFeatureFlags() {
+			const flags = { archive: true, skills: true, colors: true };
+			try {
+				const raw = typeof window !== 'undefined' ? window.__DSH_ARCHIVE_MANAGER_FEATURES__ : void 0;
+				if (raw !== null && typeof raw === 'object') {
+					for (const key of ['archive', 'skills', 'colors']) if (raw[key] === false) flags[key] = false;
+				}
+			} catch (error) {
+				/* keep every feature on when the page global is unreadable */
+			}
+			return flags;
+		}
+
+		/** Services the three features need, de-duplicated. */
+		const inject = Array.from(
+			new Set(__features.flatMap((feature) => (Array.isArray(feature.module.inject) ? feature.module.inject : [])))
+		);
+
+		/**
+		 * Browser plugin body: activate each bundled feature the row enabled,
+		 * isolated so one failure cannot take the others down.
+		 * @param ctx - client root context.
+		 */
+		function apply(ctx) {
+			const flags = __readFeatureFlags();
+			for (const feature of __features) {
+				if (flags[feature.key] === false) {
+					console.info('[archive-manager] feature disabled by config:', feature.key);
+					continue;
+				}
+				try {
+					feature.module.apply(ctx);
+				} catch (error) {
+					console.error('[archive-manager] a bundled feature failed to activate:', error);
+				}
+			}
+		}
+
+		exports.apply = apply;
+		exports.inject = inject;
+		exports.SkillManagerPage = __skills.SkillManagerPage;
+		exports.SkillManagerIcon = __skills.SkillManagerIcon;
+		exports.WorkspaceColorPalette = __colors.WorkspaceColorPalette;
+		exports.ArchiveManagerPage = __archive.ArchiveManagerPage;
+		exports.SessionDeleteMenuItem = __archive.SessionDeleteMenuItem;
+		exports.DeleteSessionDialog = __archive.DeleteSessionDialog;
+		return module.exports;
+	}
+});
+`);
 
 const output = sections.join('\n');
 writeFileSync(join(root, 'lib/client.js'), output);

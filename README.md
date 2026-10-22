@@ -8,9 +8,31 @@
 | **技能管理**（原 `dsh-plugin-skill-manager`） | 左侧边栏 → **技能** |
 | **工作区配色**（原 `dsh-plugin-workspace-colors`） | 工作区行右键 / “…”菜单 → **更改颜色** |
 
-安装这一个插件即可同时得到三者；原来的两个插件可以卸载。
+安装这一个插件即可同时得到三者；原来的两个插件可以卸载。三者也能**单独开关**，见下面「功能开关」。
 
 ---
+
+## 功能开关
+
+一个包，三个开关：打开 **设置 → 内置插件 → 归档会话** 的配置（或直接改 profile 里这一行的 `config`），每个功能都能单独关掉。
+
+| 键 | 默认 | 关闭后 |
+| --- | --- | --- |
+| `archive` | `true` | 设置里没有「归档会话」，会话「…」菜单没有「删除会话」，`/archive-manager/api` 不挂载 |
+| `skills` | `true` | 侧边栏没有「技能」入口，`/skill-manager/api` 不挂载 |
+| `colors` | `true` | 工作区没有颜色徽标、同色竖线与调色板 |
+
+```yaml
+- insert:
+    - id: archive-manager
+      name: 'dsh-plugin-archive-manager'
+      config:
+        archive: true
+        skills: true
+        colors: false   # 只关掉配色
+```
+
+宿主侧保存后立即生效（不挂载的路由即刻消失）；浏览器半边是在页面加载时读取同一组开关的，所以改完按 **⌘R** 刷新一次页面。三个都关掉也不会报错——插件只是什么都不注册。
 
 ## 1. 设置 → 归档会话
 

@@ -494,7 +494,7 @@ async function main() {
 				removeItem: () => {}
 			},
 			navigator: { language: 'zh-CN', clipboard: void 0 },
-			console: { log: () => {}, warn: () => {}, error: () => {} },
+			console: { log: () => {}, info: () => {}, warn: () => {}, error: () => {} },
 			fetch: async (url, init) => {
 				const target = String(url);
 				const payload = init && init.body ? JSON.parse(init.body) : {};
@@ -1030,6 +1030,65 @@ async function main() {
 		await runtime.flush();
 		assert.equal(launches.length, 1);
 		assert.equal(launches[0].body.path, '/home/u/.dsh/skills', 'a flat skill reveals its parent directory');
+	});
+
+	/* ── feature switches ─────────────────────────────────────────────────── */
+
+	/** Apply the bundle with explicit flags and collect what it registered. */
+	function applyWithFlags(flags) {
+		const injected = [];
+		const registrations = [];
+		if (flags === void 0) delete sandbox.__DSH_ARCHIVE_MANAGER_FEATURES__;
+		else sandbox.__DSH_ARCHIVE_MANAGER_FEATURES__ = flags;
+		try {
+			bundle.apply({
+				get: () => void 0,
+				effect: (callback) => callback(),
+				slots: {
+					inject(key, callback) {
+						injected.push(key);
+						callback();
+						return () => {};
+					},
+					register(options, component) {
+						registrations.push({ options, component });
+						return () => {};
+					}
+				}
+			});
+		} finally {
+			delete sandbox.__DSH_ARCHIVE_MANAGER_FEATURES__;
+		}
+		return { injected, registrations };
+	}
+
+	test('a disabled archive feature registers neither the page nor the menu row', () => {
+		const result = applyWithFlags({ archive: false });
+		assert.ok(!result.injected.includes('settings.section'), 'no settings page');
+		assert.ok(!result.injected.includes('sidebar.workspaces.session.menu.item'), 'no menu row');
+		assert.ok(result.injected.includes('main'), 'the skills page still activates');
+	});
+
+	test('a disabled skills feature registers neither the sidebar row nor the panel', () => {
+		const result = applyWithFlags({ skills: false });
+		assert.ok(!result.injected.includes('main'));
+		assert.ok(!result.injected.includes('sidebar.panellist'));
+		assert.ok(result.injected.includes('settings.section'), 'the archive page still activates');
+	});
+
+	test('a disabled colors feature registers no palette', () => {
+		const result = applyWithFlags({ colors: false });
+		assert.ok(!result.registrations.some((entry) => entry.options.id === 'workspace-colors.palette'));
+		assert.ok(
+			result.registrations.some((entry) => entry.options.id === 'archive-manager.delete-dialog'),
+			'the archive confirmation overlay still registers'
+		);
+	});
+
+	test('disabling every feature registers nothing at all', () => {
+		const result = applyWithFlags({ archive: false, skills: false, colors: false });
+		assert.equal(result.injected.length, 0);
+		assert.equal(result.registrations.length, 0);
 	});
 
 	/* ── the session menu row ─────────────────────────────────────────────── */

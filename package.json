@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-archive-manager",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "归档会话 / Archive Manager — 设置中的已归档会话管理器：按项目分组查询、删除、重新激活；并集成技能管理（技能页）与工作区配色",
   "type": "module",
   "main": "lib/index.js",
@@ -38,7 +38,7 @@
   "scripts": {
     "build": "node scripts/extract-factory.mjs && node scripts/build-client.mjs",
     "check": "node --check lib/index.js && node --check lib/skills.cjs && node --check lib/archive.cjs && node --check lib/client.js",
-    "test": "node test/archive-host.cjs && node test/route-harness.cjs && node test/client-harness.cjs"
+    "test": "node test/config-harness.cjs && node test/archive-host.cjs && node test/route-harness.cjs && node test/client-harness.cjs"
   },
   "license": "MIT"
 }

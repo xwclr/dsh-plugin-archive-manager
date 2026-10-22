@@ -6,6 +6,15 @@
 #
 # The row id is the identity the browser half's HTTP routes are mounted under;
 # keep it stable.
+#
+# `config` carries the three feature switches (see the `Config` schema in
+# lib/index.js). Every key defaults to true, so an empty block keeps the old
+# behaviour; Settings → Plugins → 归档会话 edits them, and a feature that is off
+# mounts neither its Host route nor its browser half.
 - insert:
     - id: archive-manager
       name: 'dsh-plugin-archive-manager'
+      config:
+        archive: true
+        skills: true
+        colors: true

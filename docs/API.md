@@ -1,5 +1,9 @@
 # `/archive-manager/api` — host/browser contract
 
+The routes below exist only while the row's `archive` switch is on (see the
+`Config` schema in `lib/index.js`); with `archive: false` the whole prefix is
+unmounted. The skill-manager routes are gated by `skills` the same way.
+
 The browser half and the host half of this plugin talk over three JSON methods
 mounted by `lib/archive.cjs` on the host's own HTTP surface. This file is the
 contract both halves implement; change it first when a shape changes.
